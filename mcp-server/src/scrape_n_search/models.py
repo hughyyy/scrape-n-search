@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from typing import Any
 
 
@@ -21,6 +21,14 @@ class FetchedPage:
     content: str
     title: str | None = None
     format: str = "markdown"
+
+
+@dataclass
+class BrowserActionsResult:
+    url: str
+    content: str
+    format: str = "markdown"
+    javascript_return: list = field(default_factory=list)
 
 
 @dataclass

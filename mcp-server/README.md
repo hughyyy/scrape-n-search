@@ -13,7 +13,8 @@ that target sites reject) is never seen by the target site.
 MCP client (agent)
    │  MCP stdio protocol
    ▼
-MCPServer (server.py) ── 4 tools: web_search, web_fetch, web_crawl, web_extract
+MCPServer (server.py) ── 6 tools: web_search, web_fetch, web_browser_actions,
+                                 web_screenshot, web_crawl, web_extract
    │
    ▼
 Router (router.py) ── picks provider by priority + capability, fails over on error
@@ -22,7 +23,7 @@ Router (router.py) ── picks provider by priority + capability, fails over on
    ├── Tavily     (search, fetch)
    ├── Exa        (search, fetch)
    ├── ZenRows    (fetch, extract)
-   ├── Scrappey   (fetch)
+   ├── Scrappey   (fetch, browser_actions, screenshot)
    ├── Firecrawl  (search, fetch, crawl, extract)
    ├── Serper     (search)
    └── Jina       (search*, fetch)
@@ -72,6 +73,37 @@ Fetch a URL to clean content, server-side.
 
 Response: `{provider, url, title?, format, content}`
 
+### `web_browser_actions`
+
+Run a sequence of browser actions on a URL (Scrappey full-browser mode) and return the
+page content plus any `execute_js` results. Served by Scrappey only.
+
+| Param | Type | Default | Notes |
+|---|---|---|---|
+| `url` | string | — | required |
+| `actions` | array of objects | — | required — Scrappey action objects (`click`, `type`, `scroll`, `execute_js`, `wait`, `wait_for_selector`, `goto`, `hover`, `keyboard`, `dropdown`, …) |
+| `format` | string | `markdown` | `markdown` \| `html`. Use `html` to receive `execute_js` results in `javascript_return` (the markdown filter suppresses them). |
+| `provider` | string? | null | |
+
+Response: `{provider, url, format, content, javascript_return[]}`
+
+See the **`scrappey://playbook`** resource (or `docs/playbook.md`) for recipes — e.g.
+reading a full AliExpress item description (scroll + click "View more" + extract).
+
+### `web_screenshot`
+
+Capture a screenshot of a URL (Scrappey browser mode), returned as base64 PNG. Served
+by Scrappey only.
+
+| Param | Type | Default |
+|---|---|---|
+| `url` | string | — |
+| `full_page` | bool | false |
+| `selector` | string? | null |
+| `provider` | string? | null |
+
+Response: `{provider, url, format: "png", screenshot_base64}`
+
 ### `web_crawl`
 
 Recursively crawl a domain. Served by Firecrawl only.
@@ -100,18 +132,20 @@ Response: `{provider, url, data}`
 
 ## Provider coverage
 
-| Provider | search | fetch | crawl | extract | Requires |
-|---|---|---|---|---|---|
-| TinyFish | ✅ | ✅ | | | `TINYFISH_API_KEY` |
-| Tavily | ✅ | ✅ | | | `TAVILY_API_KEY` |
-| Exa | ✅ | ✅ | | | `EXA_API_KEY` |
-| ZenRows | | ✅ | | ✅ | `ZENROWS_API_KEY` |
-| Scrappey | | ✅ | | | `SCRAPPEY_API_KEY` |
-| Firecrawl | ✅ | ✅ | ✅ | ✅ | `FIRECRAWL_API_KEY` |
-| Serper | ✅ | | | | `SERPER_API_KEY` |
-| Jina | ✅* | ✅ | | | `JINA_API_KEY` for search; fetch is keyless |
+| Provider | search | fetch | browser_actions | screenshot | crawl | extract | Requires |
+|---|---|---|---|---|---|---|---|
+| TinyFish | ✅ | ✅ | | | | | `TINYFISH_API_KEY` |
+| Tavily | ✅ | ✅ | | | | | `TAVILY_API_KEY` |
+| Exa | ✅ | ✅ | | | | | `EXA_API_KEY` |
+| ZenRows | | ✅ | | | | ✅ | `ZENROWS_API_KEY` |
+| **Scrappey** | | ✅ | ✅ | ✅ | | | `SCRAPPEY_API_KEY` |
+| Firecrawl | ✅ | ✅ | | | ✅ | ✅ | `FIRECRAWL_API_KEY` |
+| Serper | ✅ | | | | | | `SERPER_API_KEY` |
+| Jina | ✅* | ✅ | | | | | `JINA_API_KEY` for search; fetch is keyless |
 
-\* `s.jina.ai` (search) now requires an API key; `r.jina.ai` (fetch) still works without one.
+`browser_actions` and `screenshot` are Scrappey-only capabilities (full-browser
+features). `*` `s.jina.ai` (search) now requires an API key; `r.jina.ai` (fetch) still
+works without one.
 
 ## Configuration
 
@@ -126,11 +160,11 @@ regardless of how it is launched. Existing environment variables take precedence
 | `SCRAPPEY_API_KEY` | Enables the Scrappey provider (fetch). |
 | `TINYFISH_API_KEY`, `TAVILY_API_KEY`, `EXA_API_KEY`, `ZENROWS_API_KEY`, `FIRECRAWL_API_KEY`, `SERPER_API_KEY`, `JINA_API_KEY` | Enable the corresponding providers. |
 | `DEFAULT_PROVIDER` | Provider used when a call omits `provider`. When set, tools that provider cannot serve are **hidden** from the client. |
-| `ENABLED_TOOLS` | Explicit comma-separated allow-list (`web_search,web_fetch,web_crawl,web_extract`). Overrides the set derived from `DEFAULT_PROVIDER`. |
+| `ENABLED_TOOLS` | Explicit comma-separated allow-list (`web_search,web_fetch,web_browser_actions,web_screenshot,web_crawl,web_extract`). Overrides the set derived from `DEFAULT_PROVIDER`. |
 | `PROVIDER_PRIORITY` | Selection order for auto-picked providers (default: recommended stack order). |
 | `JINA_KEYLESS` | Set `0` to disable the keyless Jina fallback. |
 
-Example — Scrappey as the only/default provider (fetch only):
+Example — Scrappey as the only/default provider (fetch + browser actions + screenshots):
 
 ```bash
 # mcp-server/.env
@@ -142,10 +176,12 @@ DEFAULT_PROVIDER=scrappey   # hides web_search/web_crawl/web_extract
 
 Scrappey is the cheapest scraping option in the research (€0.10/1K direct, €1/1K full
 browser; pay-as-you-go, no subscription, balance never expires, residential proxies
-included, pay-per-success). It supports **fetch only** in this MCP.
+included, pay-per-success). It provides **fetch, browser actions, and screenshots** in
+this MCP.
 
-Full documentation of its two modes, pricing, API, and behavior:
-**[`docs/scrappey.md`](docs/scrappey.md)**.
+Full documentation of its two modes, pricing, API, browser actions, and behavior:
+**[`docs/scrappey.md`](docs/scrappey.md)**. A common-actions playbook for agents is
+exposed as the **`scrappey://playbook`** MCP resource (source: `docs/playbook.md`).
 
 ## Setup
 

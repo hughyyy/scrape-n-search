@@ -21,11 +21,13 @@ unified agent tools.
 - Registered with Oh My Pi on this machine: `~/.omp/agent/mcp.json` →
   `scrape-n-search` (stdio, `python -m scrape_n_search`, cwd=`mcp-server`, 120s timeout).
 - A real `SCRAPPEY_API_KEY` is set in `mcp-server/.env` (gitignored). `DEFAULT_PROVIDER=scrappey`
-  is active → the MCP exposes **only `web_fetch`** (Scrappey is fetch-only; unsupported
-  tools are auto-hidden).
+  is active → the MCP exposes **`web_fetch`, `web_browser_actions`, `web_screenshot`**
+  (Scrappey capabilities; unsupported tools are auto-hidden). A `scrappey://playbook`
+  resource guides agents on common actions.
 - Git history: `dbf36d7` (research) → `4a4e649` (MCP server) → `3419fc4` (Scrappey) →
   `5204838` (tool hiding + default provider) → `db61c28` (.env loading) → `9b71243`
-  (cwd-independent .env + OMP docs).
+  (cwd-independent .env + OMP docs) → `a66e638` (handover + docs + Scrappey basic-mode
+  fix).
 
 ## How to run
 
@@ -44,6 +46,7 @@ Keys/config live in `mcp-server/.env` (auto-loaded; see `.env.example`).
 - `mcp-server/src/scrape_n_search/providers/` — 8 provider adapters (`base.py` + one per provider)
 - `mcp-server/src/scrape_n_search/__main__.py` — entrypoint + `.env` loading
 - `mcp-server/docs/scrappey.md` — full Scrappey documentation
+- `mcp-server/docs/playbook.md` — common-actions playbook (exposed as `scrappey://playbook` resource)
 - `mcp-server/README.md` — full MCP server documentation
 
 ## Known issues / notes (from live testing)
@@ -51,6 +54,9 @@ Keys/config live in `mcp-server/.env` (auto-loaded; see `.env.example`).
 - **Scrappey basic mode returns raw HTML, not markdown** — markdown conversion is
   browser-only (`js_render=True`). The provider now handles this correctly (never sends
   `filter:["markdown"]` in basic mode).
+- **`web_browser_actions` `javascript_return` requires `format="html"`** — the markdown
+  filter (`filter:["markdown"]`) suppresses `execute_js` results. Documented in the
+  playbook and tool description.
 - **Scrappey browser mode is slow** (~20–40s/fetch) and uses residential proxies whose
   geo varies per request (saw Morocco/MAD and UK/GBP for the same site).
 - **Jina search (`s.jina.ai`) now requires an API key** (401 without); keyless fetch
@@ -67,8 +73,9 @@ Keys/config live in `mcp-server/.env` (auto-loaded; see `.env.example`).
 
 ## Open items / next steps
 
-- Consider exposing Scrappey `browserActions` (click/scroll/execute_js) as an optional
-  MCP capability — currently `web_fetch` is fetch-only.
+- Scrappey session management and AI extraction are **not** exposed via the MCP (only
+  fetch, browser actions, screenshots). Add `web_session`/`web_extract`-style tools if
+  needed (via Scrappey's direct API).
 - `web_crawl`/`web_extract` are only served by Firecrawl (and ZenRows for extract); they
   return a clean "no configured provider" error when no key is set.
 - The `main`-branch OMP JSON schema is stale (rejects even the working `hf-vision` entry);

@@ -299,6 +299,58 @@ async def test_scrappey_failed_request_raises():
         await provider.fetch("https://example.com")
 
 
+async def test_scrappey_browser_actions():
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.read())
+        assert body["requestType"] == "browser"
+        assert body["markdown"] is True
+        assert body["browserActions"] == [{"type": "execute_js", "code": "document.body.innerText"}]
+        return httpx.Response(
+            200,
+            json={
+                "solution": {
+                    "currentUrl": "https://final.example.com",
+                    "markdown": "# After actions",
+                    "javascriptReturn": ["clicked", "body text"],
+                },
+                "data": "success",
+            },
+        )
+
+    provider = ScrappeyProvider("k", make_client(handler))
+    result = await provider.browser_actions(
+        "https://example.com",
+        actions=[{"type": "execute_js", "code": "document.body.innerText"}],
+    )
+    assert result.content == "# After actions"
+    assert result.format == "markdown"
+    assert result.javascript_return == ["clicked", "body text"]
+    assert result.url == "https://final.example.com"
+
+
+async def test_scrappey_browser_actions_empty_raises():
+    from scrape_n_search.errors import ProviderError
+
+    provider = ScrappeyProvider("k", make_client(lambda r: httpx.Response(200, json={})))
+    with pytest.raises(ProviderError):
+        await provider.browser_actions("https://example.com", actions=[])
+
+
+async def test_scrappey_screenshot():
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.read())
+        assert body["screenshot_fullpage"] is True
+        assert "markdown" not in body
+        return httpx.Response(
+            200,
+            json={"solution": {"screenshot": "aGVsbG8="}, "data": "success"},
+        )
+
+    provider = ScrappeyProvider("k", make_client(handler))
+    img = await provider.screenshot("https://example.com", full_page=True)
+    assert img == "aGVsbG8="
+
+
 async def test_scrappey_disabled_without_key():
     assert not ScrappeyProvider(None).enabled
 

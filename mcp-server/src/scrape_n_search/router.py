@@ -13,7 +13,7 @@ import httpx
 from .errors import NoProviderAvailable, ProviderError
 from .providers.base import BaseProvider
 
-TOOLS = frozenset({"search", "fetch", "crawl", "extract"})
+TOOLS = frozenset({"search", "fetch", "crawl", "extract", "browser_actions", "screenshot"})
 
 
 class Router:

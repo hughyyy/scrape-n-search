@@ -11,7 +11,7 @@ from __future__ import annotations
 import httpx
 
 from ..errors import ProviderError
-from ..models import FetchedPage
+from ..models import BrowserActionsResult, FetchedPage
 from .base import BaseProvider
 
 BASE = "https://publisher.scrappey.com/api/v1"
@@ -19,7 +19,7 @@ BASE = "https://publisher.scrappey.com/api/v1"
 
 class ScrappeyProvider(BaseProvider):
     name = "scrappey"
-    capabilities = frozenset({"fetch"})
+    capabilities = frozenset({"fetch", "browser_actions", "screenshot"})
 
     def __init__(self, api_key: str | None, client: httpx.AsyncClient | None = None):
         super().__init__(client)
@@ -71,3 +71,77 @@ class ScrappeyProvider(BaseProvider):
             title=None,
             format=out_format,
         )
+
+    async def browser_actions(
+        self,
+        url: str,
+        *,
+        actions: list[dict],
+        format: str = "markdown",
+        proxy_country: str | None = None,
+        **kw,
+    ) -> BrowserActionsResult:
+        """Run a sequence of browser actions on a page (full browser mode).
+
+        ``actions`` is a list of Scrappey browser-action objects (click, type,
+        scroll, execute_js, wait, …). ``execute_js`` results are returned in
+        ``javascript_return``; the rendered page content is also returned.
+        """
+        if not actions:
+            raise ProviderError("scrappey browser_actions: actions list is empty")
+        want_markdown = format == "markdown"
+        body: dict = {
+            "cmd": "request.get",
+            "url": url,
+            "requestType": "browser",
+            "browserActions": actions,
+        }
+        if want_markdown:
+            body["markdown"] = True
+            body["filter"] = ["markdown"]
+        if proxy_country:
+            body["proxyCountry"] = proxy_country
+
+        data = await self._request_json("POST", f"{BASE}?key={self.api_key}", json=body)
+        if data.get("data") != "success":
+            raise ProviderError(f"scrappey browser_actions failed: {data.get('data', data)}")
+        solution = data.get("solution", {})
+        if want_markdown:
+            content = solution.get("markdown") or solution.get("innerText") or ""
+        else:
+            content = solution.get("response") or solution.get("innerText") or ""
+        return BrowserActionsResult(
+            url=solution.get("currentUrl") or url,
+            content=content,
+            format="markdown" if want_markdown else "html",
+            javascript_return=solution.get("javascriptReturn") or [],
+        )
+
+    async def screenshot(
+        self,
+        url: str,
+        *,
+        full_page: bool = False,
+        selector: str | None = None,
+        proxy_country: str | None = None,
+        **kw,
+    ) -> str:
+        """Capture a screenshot (full browser mode). Returns base64-encoded image."""
+        body: dict = {"cmd": "request.get", "url": url, "requestType": "browser"}
+        if full_page:
+            body["screenshot_fullpage"] = True
+        elif selector:
+            body["screenshot_selector"] = selector
+        else:
+            body["screenshot"] = True
+        if proxy_country:
+            body["proxyCountry"] = proxy_country
+
+        data = await self._request_json("POST", f"{BASE}?key={self.api_key}", json=body)
+        if data.get("data") != "success":
+            raise ProviderError(f"scrappey screenshot failed: {data.get('data', data)}")
+        solution = data.get("solution", {})
+        img = solution.get("screenshot")
+        if not img:
+            raise ProviderError("scrappey screenshot: no screenshot returned in response")
+        return img
