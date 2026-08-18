@@ -22,7 +22,10 @@ to the next on error. The response always names the provider that served it.
 
 ## Configuration
 
-Environment variables (see `.env.example`):
+API keys and settings live in **`mcp-server/.env`** (auto-loaded at startup; gitignored).
+Copy `.env.example` to `.env` and fill in your keys. Existing environment variables take
+precedence over `.env`, so you can also set keys in your shell or in the MCP client's
+`env` block.
 
 | Var | Effect |
 |---|---|
@@ -33,8 +36,9 @@ Environment variables (see `.env.example`):
 Example — Scrappey as the only/default provider (fetch only):
 
 ```bash
-export SCRAPPEY_API_KEY=...
-export DEFAULT_PROVIDER=scrappey   # hides web_search/web_crawl/web_extract
+# mcp-server/.env
+SCRAPPEY_API_KEY=your_key_here
+DEFAULT_PROVIDER=scrappey   # hides web_search/web_crawl/web_extract
 ```
 
 ## Provider coverage
