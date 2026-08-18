@@ -16,9 +16,23 @@ def build_router_from_env() -> Router:
     return Router(providers, priority=priority)
 
 
+def build_server_from_env(router: Router):
+    """Configure the server from environment variables.
+
+    - DEFAULT_PROVIDER: provider used when the caller does not specify one;
+      tools it cannot serve are hidden.
+    - ENABLED_TOOLS: explicit comma-separated allow-list of tool names
+      (overrides the default-provider-derived set).
+    """
+    default_provider = os.environ.get("DEFAULT_PROVIDER") or None
+    enabled_raw = os.environ.get("ENABLED_TOOLS")
+    enabled_tools = {t.strip() for t in enabled_raw.split(",") if t.strip()} if enabled_raw else None
+    return build_server(router, default_provider=default_provider, enabled_tools=enabled_tools)
+
+
 def main() -> None:
     router = build_router_from_env()
-    server = build_server(router)
+    server = build_server_from_env(router)
     # Provider clients are closed by the server lifespan (same event loop).
     server.run(transport="stdio")
 

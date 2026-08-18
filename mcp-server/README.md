@@ -20,6 +20,23 @@ Every tool accepts an optional `provider` parameter to force a specific provider
 otherwise the first configured provider that supports the tool is used, with failover
 to the next on error. The response always names the provider that served it.
 
+## Configuration
+
+Environment variables (see `.env.example`):
+
+| Var | Effect |
+|---|---|
+| `DEFAULT_PROVIDER` | Provider used when a call omits `provider`. When set, tools that provider cannot serve are **hidden** from the client. |
+| `ENABLED_TOOLS` | Explicit comma-separated allow-list (`web_search,web_fetch,web_crawl,web_extract`). Overrides the set derived from `DEFAULT_PROVIDER`. |
+| `PROVIDER_PRIORITY` | Selection order for auto-picked providers (default: recommended stack order). |
+
+Example — Scrappey as the only/default provider (fetch only):
+
+```bash
+export SCRAPPEY_API_KEY=...
+export DEFAULT_PROVIDER=scrappey   # hides web_search/web_crawl/web_extract
+```
+
 ## Provider coverage
 
 | Provider | search | fetch | crawl | extract | Requires |

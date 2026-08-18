@@ -34,6 +34,10 @@ class Router:
             if n in self._providers and self._providers[n].enabled and tool in self._providers[n].capabilities
         ]
 
+    def get(self, name: str) -> BaseProvider | None:
+        """Look up a provider by name (enabled or not)."""
+        return self._providers.get(name)
+
     async def run(self, tool: str, preferred: str | None = None, **kwargs) -> tuple[str, object]:
         """Dispatch `tool` to the best provider.
 

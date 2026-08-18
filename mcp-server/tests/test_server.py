@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from contextlib import asynccontextmanager
 
+import pytest
 from mcp.client.client import InMemoryTransport
 from mcp.client.session import ClientSession
 
@@ -26,8 +27,8 @@ class FakeProvider(BaseProvider):
 
 
 @asynccontextmanager
-async def client_for(router: Router):
-    server = build_server(router)
+async def client_for(router: Router, **server_kwargs):
+    server = build_server(router, **server_kwargs)
     async with InMemoryTransport(server) as (client_read, client_write):
         async with ClientSession(client_read, client_write) as session:
             await session.initialize()
@@ -77,3 +78,69 @@ async def test_no_provider_returns_error_json():
         res = await session.call_tool("web_search", {"query": "hello"})
         payload = json.loads(res.content[0].text)
         assert "error" in payload
+
+
+class FetchOnlyProvider(BaseProvider):
+    name = "scrappey"
+    capabilities = frozenset({"fetch"})
+
+    def __init__(self, enabled: bool = True):
+        super().__init__()
+        self._enabled = enabled
+
+    @property
+    def enabled(self) -> bool:
+        return self._enabled
+
+    async def fetch(self, url: str, **kw) -> FetchedPage:
+        return FetchedPage(url=url, content="# Hello", title="T")
+
+
+class OtherFetchProvider(FetchOnlyProvider):
+    name = "other"
+
+
+async def _list_names(router, **kwargs):
+    server = build_server(router, **kwargs)
+    async with InMemoryTransport(server) as (client_read, client_write):
+        async with ClientSession(client_read, client_write) as session:
+            await session.initialize()
+            tools = await session.list_tools()
+            return {t.name for t in tools.tools}
+
+
+async def test_default_provider_hides_unsupported_tools():
+    names = await _list_names(Router([FetchOnlyProvider()]), default_provider="scrappey")
+    assert names == {"web_fetch"}
+
+
+async def test_default_provider_used_when_omitted():
+    router = Router([FetchOnlyProvider()])
+    async with client_for(router, default_provider="scrappey") as session:
+        res = await session.call_tool("web_fetch", {"url": "https://example.com"})
+        payload = json.loads(res.content[0].text)
+        assert payload["provider"] == "scrappey"
+
+
+async def test_explicit_provider_overrides_default():
+    router = Router([FetchOnlyProvider(), OtherFetchProvider()])
+    async with client_for(router, default_provider="scrappey") as session:
+        res = await session.call_tool("web_fetch", {"url": "https://example.com", "provider": "other"})
+        payload = json.loads(res.content[0].text)
+        assert payload["provider"] == "other"
+
+
+async def test_unknown_default_provider_raises():
+    with pytest.raises(ValueError):
+        build_server(Router([FetchOnlyProvider()]), default_provider="nope")
+
+
+async def test_unconfigured_default_provider_raises():
+    router = Router([FetchOnlyProvider(enabled=False)])
+    with pytest.raises(ValueError):
+        build_server(router, default_provider="scrappey")
+
+
+async def test_enabled_tools_allow_list():
+    names = await _list_names(Router([FetchOnlyProvider()]), enabled_tools={"web_fetch", "web_search"})
+    assert names == {"web_fetch", "web_search"}
