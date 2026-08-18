@@ -3,12 +3,17 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 from dotenv import load_dotenv
 
 from .providers import DEFAULT_PRIORITY, build_providers
 from .router import Router
 from .server import build_server
+
+# Directory containing this package's project (…/mcp-server), used to locate
+# .env regardless of the process working directory.
+PROJECT_DIR = Path(__file__).resolve().parent.parent.parent
 
 
 def build_router_from_env() -> Router:
@@ -33,9 +38,11 @@ def build_server_from_env(router: Router):
 
 
 def main() -> None:
-    # Load .env from the working directory (or its parents). Existing
-    # environment variables take precedence and are not overwritten.
+    # Load .env from the working directory (or its parents), then fall back to
+    # the project's own .env. Existing environment variables take precedence and
+    # are not overwritten.
     load_dotenv()
+    load_dotenv(PROJECT_DIR / ".env")
     router = build_router_from_env()
     server = build_server_from_env(router)
     # Provider clients are closed by the server lifespan (same event loop).

@@ -102,6 +102,21 @@ Claude Desktop / Claude Code `claude_desktop_config.json` or `.mcp.json`:
 }
 ```
 
+## Oh My Pi (OMP) integration
+
+Registered on this machine as a user-level MCP server in `~/.omp/agent/mcp.json`
+(`scrape-n-search`, stdio). After editing that file (or `.env`), reload in the
+OMP session:
+
+```
+/mcp reload
+/mcp list        # confirm scrape-n-search is discovered
+/mcp test scrape-n-search
+```
+
+The server auto-loads `mcp-server/.env` regardless of the working directory, so
+keys added there apply without touching the OMP config.
+
 ## Tests
 
 ```bash
