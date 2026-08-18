@@ -10,13 +10,14 @@ from .base import BaseProvider
 from .exa import ExaProvider
 from .firecrawl import FirecrawlProvider
 from .jina import JinaProvider
+from .scrappey import ScrappeyProvider
 from .serper import SerperProvider
 from .tavily import TavilyProvider
 from .tinyfish import TinyFishProvider
 from .zenrows import ZenRowsProvider
 
 # Default selection order: recommended stack first, cheap/fallback last.
-DEFAULT_PRIORITY = ["tinyfish", "tavily", "exa", "zenrows", "firecrawl", "serper", "jina"]
+DEFAULT_PRIORITY = ["tinyfish", "tavily", "exa", "zenrows", "scrappey", "firecrawl", "serper", "jina"]
 
 
 def build_providers(client: httpx.AsyncClient | None = None) -> list[BaseProvider]:
@@ -32,6 +33,7 @@ def build_providers(client: httpx.AsyncClient | None = None) -> list[BaseProvide
         TavilyProvider(os.environ.get("TAVILY_API_KEY"), client),
         ExaProvider(os.environ.get("EXA_API_KEY"), client),
         ZenRowsProvider(os.environ.get("ZENROWS_API_KEY"), client),
+        ScrappeyProvider(os.environ.get("SCRAPPEY_API_KEY"), client),
         FirecrawlProvider(os.environ.get("FIRECRAWL_API_KEY"), client),
         SerperProvider(os.environ.get("SERPER_API_KEY"), client),
     ]

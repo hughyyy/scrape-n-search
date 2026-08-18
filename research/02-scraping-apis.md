@@ -30,10 +30,30 @@ residential proxies), so the client VPN IP is irrelevant.
 - Free trial credits exist; no prepaid/pay-as-you-go model.
 - JS rendering, rotating + premium proxies, geotargeting.
 
+## Scrappey — scrappey.com (recommended, cheapest)
+
+- **Pay-as-you-go, no subscription, no monthly minimum.** Free trial, no card.
+- **Balance never expires**; only successful requests are billed (failed scrapes free).
+- Two modes on one balance:
+  - **Direct scrape** — €0.10 / 1K (raw HTTP + proxy, no JS) — APIs and static pages.
+  - **Full browser load** — €1.00 / 1K (real browser + proxy, renders JS, handles
+    browser-verification flows).
+- **Residential proxies included on both modes** (50M+ IPs, 195+ countries) — no
+  separate proxy billing. `proxyCountry` selects a region.
+- Returns rendered HTML, cookies, or LLM-ready Markdown; 30+ browser actions;
+  session management; screenshots.
+- Cheapest option in this research: €1/1K full-browser vs ZenRows ~$6.90/1K,
+  ScrapingBee ~$4.90/1K, Scrapfly ~$4.50/1K (per Scrappey's verified comparison).
+- API: `POST https://publisher.scrappey.com/api/v1?key=…` with
+  `{"cmd": "request.get", "url": …, "markdown": true, "filter": ["markdown"]}` →
+  `solution.{markdown|response|innerText}`.
+- No search/crawl endpoints — fetch only.
+
 ## Key comparison
 
 | Tool | Free tier | Prepaid / PAYG | Lowest entry |
 |---|---|---|---|
+| Scrappey | free trial (no card) | Yes — pay-as-you-go, balance never expires | €0.10/1K direct, €1/1K browser |
 | ZenRows | 5,000 credits/mo (no card) | Yes — credit-based, top-ups | Free / $19/mo |
 | ScraperAPI | 7-day, 5,000 credits (no card) | PAYG only on $475+/mo | $49/mo |
 | ScrapingBee | trial credits | No | $19.99/mo |

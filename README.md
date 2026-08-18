@@ -26,7 +26,7 @@ Caveat: the VPN must permit plain outbound 443 to the API host (normal for any V
 | Need | Pick | Why |
 |---|---|---|
 | Search + fetch, free, no card | **TinyFish** or **Tavily** | Search+Fetch free (TinyFish); 1,000 free credits/mo then $0.008/credit PAYG (Tavily) |
-| Scraping hard / anti-bot sites | **ZenRows** | 5,000 free credits/mo, credit-based, only successful requests charged, residential proxies |
+| Scraping hard / anti-bot sites | **ZenRows** or **Scrappey** | ZenRows: 5,000 free credits/mo, credit-based, only successful charged. Scrappey: cheapest (€1/1K browser), pay-as-you-go, balance never expires |
 | Pure prepaid, no subscription | **Exa** | $20 free + $10/mo, load credits, no subscription/minimum |
 
 All facts verified against primary-source pricing pages on 2026-08-18. See each file for

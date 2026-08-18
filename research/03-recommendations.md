@@ -22,6 +22,9 @@ VPN IP never touches the target site.
 2. **Scraping hard / anti-bot sites:**
    - **ZenRows** — 5,000 free credits/mo (no card); credit-based, only successful
      requests charged; residential premium proxies for protected sites; top-ups.
+   - **Scrappey** — cheapest option (€1/1K full-browser, €0.10/1K direct), pure
+     pay-as-you-go with no subscription and a balance that never expires; residential
+     proxies included; free trial, no card. Fetch only.
 
 3. **Pure prepaid no-subscription at scale:**
    - **Exa** — $20 free + $10/mo free-tier credits; load credits, no subscription/minimum.

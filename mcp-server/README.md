@@ -1,7 +1,7 @@
 # scrape-n-search MCP server
 
 Unified web-search and scraping tools for AI agents, backed by multiple providers
-(TinyFish, Tavily, Exa, ZenRows, Firecrawl, Serper, Jina). The agent calls a handful
+(TinyFish, Tavily, Exa, ZenRows, Scrappey, Firecrawl, Serper, Jina). The agent calls a handful
 of tools and never needs to know which provider served the request.
 
 Because every provider fetches on **its own servers**, the client's IP (e.g. a VPN
@@ -28,6 +28,7 @@ to the next on error. The response always names the provider that served it.
 | Tavily | ✅ | ✅ | | | `TAVILY_API_KEY` |
 | Exa | ✅ | ✅ | | | `EXA_API_KEY` |
 | ZenRows | | ✅ | | ✅ | `ZENROWS_API_KEY` |
+| Scrappey | | ✅ | | | `SCRAPPEY_API_KEY` |
 | Firecrawl | ✅ | ✅ | ✅ | ✅ | `FIRECRAWL_API_KEY` |
 | Serper | ✅ | | | | `SERPER_API_KEY` |
 | Jina | ✅* | ✅ | | | `JINA_API_KEY` for search; fetch is keyless |
@@ -48,9 +49,10 @@ export TINYFISH_API_KEY=...      # recommended
 export TAVILY_API_KEY=...        # recommended
 export EXA_API_KEY=...           # recommended
 export ZENROWS_API_KEY=...       # scraping / anti-bot
-export FIRECRAWL_API_KEY=...     # crawl + extract
+export SCRAPPEY_API_KEY=...     # scraping / anti-bot (cheapest, pay-as-you-go)
+export FIRECRAWL_API_KEY=...    # crawl + extract
 # optional: SERPER_API_KEY, JINA_API_KEY
-# optional: PROVIDER_PRIORITY=tinyfish,tavily,exa,zenrows,firecrawl,serper,jina
+# optional: PROVIDER_PRIORITY=tinyfish,tavily,exa,zenrows,scrappey,firecrawl,serper,jina
 ```
 
 ## Run

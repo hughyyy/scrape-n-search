@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import json
+
 import httpx
 import pytest
 
 from scrape_n_search.providers.exa import ExaProvider
 from scrape_n_search.providers.firecrawl import FirecrawlProvider
 from scrape_n_search.providers.jina import JinaProvider, _parse_search_markdown
+from scrape_n_search.providers.scrappey import ScrappeyProvider
 from scrape_n_search.providers.serper import SerperProvider
 from scrape_n_search.providers.tavily import TavilyProvider
 from scrape_n_search.providers.tinyfish import TinyFishProvider
@@ -220,6 +223,68 @@ async def test_jina_search_parses_markdown():
     assert results[0].url == "https://first.com"
     assert results[0].snippet == "about first"
     assert results[1].title == "Second Result"
+
+
+async def test_scrappey_fetch_markdown():
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.params["key"] == "k"
+        body = json.loads(request.read())
+        assert body == {
+            "cmd": "request.get",
+            "url": "https://example.com",
+            "markdown": True,
+            "filter": ["markdown"],
+            "requestType": "browser",
+        }
+        return httpx.Response(
+            200,
+            json={
+                "solution": {
+                    "statusCode": 200,
+                    "currentUrl": "https://final.example.com",
+                    "markdown": "# Hello",
+                    "response": "<html>...</html>",
+                },
+                "timeElapsed": 1234,
+                "data": "success",
+            },
+        )
+
+    provider = ScrappeyProvider("k", make_client(handler))
+    page = await provider.fetch("https://example.com")
+    assert page.content == "# Hello"
+    assert page.format == "markdown"
+    assert page.url == "https://final.example.com"
+
+
+async def test_scrappey_fetch_html():
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.read())
+        assert body == {"cmd": "request.get", "url": "https://example.com", "requestType": "request"}
+        return httpx.Response(
+            200,
+            json={"solution": {"response": "<html>hi</html>", "innerText": "hi"}, "data": "success"},
+        )
+
+    provider = ScrappeyProvider("k", make_client(handler))
+    page = await provider.fetch("https://example.com", format="html", js_render=False)
+    assert page.content == "<html>hi</html>"
+    assert page.format == "html"
+
+
+async def test_scrappey_failed_request_raises():
+    from scrape_n_search.errors import ProviderError
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"data": "error", "solution": {}})
+
+    provider = ScrappeyProvider("k", make_client(handler))
+    with pytest.raises(ProviderError):
+        await provider.fetch("https://example.com")
+
+
+async def test_scrappey_disabled_without_key():
+    assert not ScrappeyProvider(None).enabled
 
 
 async def test_unsupported_tool_raises():
