@@ -18,6 +18,8 @@ Caveat: the VPN must permit plain outbound 443 to the API host (normal for any V
 - [`research/01-search-apis.md`](research/01-search-apis.md) — search + fetch APIs
 - [`research/02-scraping-apis.md`](research/02-scraping-apis.md) — scraping-specific APIs
 - [`research/03-recommendations.md`](research/03-recommendations.md) — recommendation and next steps
+- [`mcp-server/`](mcp-server/README.md) — MCP server rolling the providers behind unified tools
+  (`web_search`, `web_fetch`, `web_crawl`, `web_extract`)
 
 ## Verdict (TL;DR)
 
