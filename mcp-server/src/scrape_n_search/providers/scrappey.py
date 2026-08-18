@@ -40,14 +40,18 @@ class ScrappeyProvider(BaseProvider):
         **kw,
     ) -> FetchedPage:
         want_markdown = format == "markdown"
+        browser = js_render
         body: dict = {"cmd": "request.get", "url": url}
-        if want_markdown:
+        # "browser" renders JS and can convert to markdown (€1/1K);
+        # "request" is direct HTTP with no rendering, returns raw HTML (€0.10/1K).
+        # Markdown conversion is a browser-only feature, so basic mode never
+        # requests it and returns the raw response instead.
+        body["requestType"] = "browser" if browser else "request"
+        if browser and want_markdown:
             body["markdown"] = True
             body["filter"] = ["markdown"]
-        # "browser" renders JS (€1/1K); "request" is direct HTTP (€0.10/1K).
         # Residential proxies are included on both modes, so premium_proxy is
         # always effectively enabled; the flag is accepted for interface parity.
-        body["requestType"] = "browser" if js_render else "request"
         if proxy_country:
             body["proxyCountry"] = proxy_country
 
@@ -55,7 +59,7 @@ class ScrappeyProvider(BaseProvider):
         if data.get("data") != "success":
             raise ProviderError(f"scrappey fetch failed: {data.get('data', data)}")
         solution = data.get("solution", {})
-        if want_markdown:
+        if browser and want_markdown:
             content = solution.get("markdown") or solution.get("innerText") or ""
             out_format = "markdown"
         else:

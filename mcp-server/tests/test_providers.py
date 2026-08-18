@@ -272,6 +272,22 @@ async def test_scrappey_fetch_html():
     assert page.format == "html"
 
 
+async def test_scrappey_basic_mode_never_requests_markdown():
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.read())
+        # basic mode: no markdown/filter, even when markdown was requested
+        assert body == {"cmd": "request.get", "url": "https://example.com", "requestType": "request"}
+        return httpx.Response(
+            200,
+            json={"solution": {"response": "<html>raw</html>", "innerText": "raw"}, "data": "success"},
+        )
+
+    provider = ScrappeyProvider("k", make_client(handler))
+    page = await provider.fetch("https://example.com", format="markdown", js_render=False)
+    assert page.content == "<html>raw</html>"
+    assert page.format == "html"
+
+
 async def test_scrappey_failed_request_raises():
     from scrape_n_search.errors import ProviderError
 
