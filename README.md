@@ -80,6 +80,26 @@ cp mcp-server/.env.example mcp-server/.env
 .venv/bin/scrape-n-search
 ```
 
+## Install & register with your agents (optional)
+
+`./install.sh` installs the server into a dedicated user venv
+(`~/.local/share/scrape-n-search/venv`) so the interpreter path embedded in agent
+configs stays stable, then registers it with the MCP-aware harnesses it detects
+(Oh My Pi, Claude Desktop, Claude Code, Cursor, VS Code). Registration merges a
+`scrape-n-search` entry into each harness's own config file — other servers are
+preserved, a backup is written before any change, and writes are atomic.
+
+```bash
+./install.sh            # install + prompt to register with detected harnesses
+./install.sh list       # show detection + registration state
+./install.sh register   # re-register (e.g. after adding a harness)
+./install.sh uninstall  # unregister, then remove the venv
+```
+
+Register against specific harnesses with `--harness` (e.g. `./install.sh register
+--harness omp --harness cursor`). Codex is detected but not yet registered (its
+TOML schema is unsupported). Details: `scripts/install_mcp.py`.
+
 ## MCP client config
 
 Add the server to your MCP client's configuration (adjust paths to your checkout):
