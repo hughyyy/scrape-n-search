@@ -50,8 +50,10 @@ requested. (Requesting markdown in basic mode otherwise errors with
 
 - `premium_proxy` — accepted for interface parity; residential proxies are always
   included on both modes, so it is effectively always enabled.
-- `proxy_country` — maps to Scrappey's `proxyCountry` (e.g. `"UnitedStates"`) to pick a
-  region for the built-in rotating proxies.
+- `proxy_country` — exposed on `web_fetch`, `web_browser_actions`, and
+  `web_screenshot`; maps to Scrappey's `proxyCountry` (e.g. `"UnitedStates"`) to pick a
+  region for the built-in rotating proxies. Use it to pin the geo, which otherwise
+  varies per request.
 
 ## API reference (as implemented)
 

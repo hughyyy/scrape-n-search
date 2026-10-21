@@ -36,7 +36,9 @@ _TOOL_DESCRIPTIONS = {
         "Fetch a URL and return its content (markdown by default). Runs server-side on the provider's "
         "infrastructure, so the caller's IP is never seen by the target site. "
         "js_render=false uses Scrappey basic mode (raw HTML, cheap); js_render=true uses full browser "
-        "mode (JS rendering, markdown). Prefer old.reddit.com over www.reddit.com for Reddit."
+        "mode (JS rendering, markdown). proxy_country pins the Scrappey residential proxy region "
+        "(e.g. 'UnitedStates') — otherwise the geo varies per request. "
+        "Prefer old.reddit.com over www.reddit.com for Reddit."
     ),
     "web_crawl": (
         "Recursively crawl a domain and return discovered pages with their content. Provider is "
@@ -50,14 +52,16 @@ _TOOL_DESCRIPTIONS = {
     "web_browser_actions": (
         "Run a sequence of browser actions on a URL (full browser mode) and return the page content "
         "plus any execute_js results. 'actions' is a list of Scrappey action objects: click, type, "
-        "goto, wait, wait_for_selector, wait_for_function, execute_js, scroll, hover, keyboard, "
-        "dropdown. NOTE: execute_js results (javascript_return) are only returned when format='html'; "
+        "wait, wait_for_selector, wait_for_function, execute_js, scroll, hover, keyboard, "
+        "dropdown. proxy_country pins the residential proxy region (e.g. 'UnitedStates'). "
+        "NOTE: execute_js results (javascript_return) are only returned when format='html'; "
         "the markdown filter suppresses them. See the scrappey://playbook resource for recipes (e.g. "
         "reading a full AliExpress item description requires scrolling + clicking 'View more' + extracting)."
     ),
     "web_screenshot": (
         "Capture a screenshot of a URL (full browser mode) and return it as base64 PNG. "
-        "full_page=true for a full-page capture; selector captures a specific element."
+        "full_page=true for a full-page capture; selector captures a specific element. "
+        "proxy_country pins the residential proxy region (e.g. 'UnitedStates')."
     ),
 }
 
@@ -171,6 +175,7 @@ def build_server(
             provider: str | None = None,
             js_render: bool = False,
             premium_proxy: bool = False,
+            proxy_country: str | None = None,
         ) -> str:
             try:
                 name, page = await router.run(
@@ -180,6 +185,7 @@ def build_server(
                     format=format,
                     js_render=js_render,
                     premium_proxy=premium_proxy,
+                    proxy_country=proxy_country,
                 )
             except NoProviderAvailable as exc:
                 return json.dumps({"error": str(exc)})
@@ -193,6 +199,7 @@ def build_server(
             actions: list[dict],
             format: str = "markdown",
             provider: str | None = None,
+            proxy_country: str | None = None,
         ) -> str:
             try:
                 name, result = await router.run(
@@ -201,6 +208,7 @@ def build_server(
                     url=url,
                     actions=actions,
                     format=format,
+                    proxy_country=proxy_country,
                 )
             except NoProviderAvailable as exc:
                 return json.dumps({"error": str(exc)})
@@ -214,10 +222,16 @@ def build_server(
             full_page: bool = False,
             selector: str | None = None,
             provider: str | None = None,
+            proxy_country: str | None = None,
         ) -> str:
             try:
                 name, img = await router.run(
-                    "screenshot", preferred=_preferred(provider), url=url, full_page=full_page, selector=selector
+                    "screenshot",
+                    preferred=_preferred(provider),
+                    url=url,
+                    full_page=full_page,
+                    selector=selector,
+                    proxy_country=proxy_country,
                 )
             except NoProviderAvailable as exc:
                 return json.dumps({"error": str(exc)})

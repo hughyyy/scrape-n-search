@@ -197,3 +197,58 @@ async def test_playbook_resource_listed_and_readable():
         text = result.contents[0].text
         assert "AliExpress" in text
         assert "old.reddit" in text
+
+
+class RecordingProvider(BaseProvider):
+    """Scrappey-shaped provider that records the kwargs each call received."""
+
+    name = "scrappey"
+    capabilities = frozenset({"fetch", "browser_actions", "screenshot"})
+
+    def __init__(self):
+        super().__init__()
+        self.calls: dict[str, dict] = {}
+
+    async def fetch(self, url: str, **kw) -> FetchedPage:
+        self.calls["fetch"] = kw
+        return FetchedPage(url=url, content="# Hello", title="T")
+
+    async def browser_actions(self, url: str, actions: list, **kw):
+        self.calls["browser_actions"] = kw
+        return BrowserActionsResult(url=url, content="# After actions")
+
+    async def screenshot(self, url: str, **kw) -> str:
+        self.calls["screenshot"] = kw
+        return "aGVsbG8="
+
+
+async def test_proxy_country_passed_to_fetch():
+    provider = RecordingProvider()
+    async with client_for(Router([provider])) as session:
+        res = await session.call_tool(
+            "web_fetch",
+            {"url": "https://example.com", "proxy_country": "UnitedStates"},
+        )
+        payload = json.loads(res.content[0].text)
+        assert payload["provider"] == "scrappey"
+        assert provider.calls["fetch"]["proxy_country"] == "UnitedStates"
+
+
+async def test_proxy_country_passed_to_actions_and_screenshot():
+    provider = RecordingProvider()
+    async with client_for(Router([provider])) as session:
+        await session.call_tool(
+            "web_browser_actions",
+            {"url": "https://example.com", "actions": [{"type": "wait", "wait": 1}], "proxy_country": "UnitedStates"},
+        )
+        await session.call_tool("web_screenshot", {"url": "https://example.com", "proxy_country": "UnitedKingdom"})
+        assert provider.calls["browser_actions"]["proxy_country"] == "UnitedStates"
+        assert provider.calls["screenshot"]["proxy_country"] == "UnitedKingdom"
+
+
+async def test_proxy_country_in_tool_schemas():
+    async with client_for(Router([RecordingProvider()])) as session:
+        tools = await session.list_tools()
+        schemas = {t.name: t.input_schema for t in tools.tools}
+        for tool in ("web_fetch", "web_browser_actions", "web_screenshot"):
+            assert "proxy_country" in schemas[tool]["properties"]

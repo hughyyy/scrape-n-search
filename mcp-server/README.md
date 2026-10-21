@@ -70,6 +70,7 @@ Fetch a URL to clean content, server-side.
 | `provider` | string? | null | force a provider |
 | `js_render` | bool | false | render JS (Scrappey browser mode; ZenRows `js_render`) |
 | `premium_proxy` | bool | false | residential proxy routing (Scrappey: always on; ZenRows `premium_proxy`) |
+| `proxy_country` | string? | null | pin the Scrappey residential proxy region (e.g. `UnitedStates`); otherwise geo varies per request |
 
 Response: `{provider, url, title?, format, content}`
 
@@ -84,6 +85,7 @@ page content plus any `execute_js` results. Served by Scrappey only.
 | `actions` | array of objects | — | required — Scrappey action objects (`click`, `type`, `scroll`, `execute_js`, `wait`, `wait_for_selector`, `goto`, `hover`, `keyboard`, `dropdown`, …) |
 | `format` | string | `markdown` | `markdown` \| `html`. Use `html` to receive `execute_js` results in `javascript_return` (the markdown filter suppresses them). |
 | `provider` | string? | null | |
+| `proxy_country` | string? | null | pin the Scrappey residential proxy region (e.g. `UnitedStates`) |
 
 Response: `{provider, url, format, content, javascript_return[]}`
 
@@ -101,6 +103,7 @@ by Scrappey only.
 | `full_page` | bool | false |
 | `selector` | string? | null |
 | `provider` | string? | null |
+| `proxy_country` | string? | null | pin the Scrappey residential proxy region (e.g. `UnitedStates`) |
 
 Response: `{provider, url, format: "png", screenshot_base64}`
 
