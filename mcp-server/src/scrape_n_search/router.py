@@ -13,12 +13,15 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import time
 
 import httpx
 
 from .errors import NoProviderAvailable, ProviderError
 from .providers.base import BaseProvider
+
+logger = logging.getLogger(__name__)
 
 TOOLS = frozenset({"search", "fetch", "crawl", "extract", "browser_actions", "screenshot", "session"})
 
@@ -116,17 +119,22 @@ class Router:
             cache_key = self._cache_key(tool, preferred, kwargs)
             hit = self._cache_get(tool, cache_key)
             if hit is not None:
+                logger.debug("cache hit for '%s'", tool)
                 return hit
 
         errors: list[str] = []
+        start = time.monotonic()
         for prov in candidates:
             try:
                 result = await getattr(prov, tool)(**kwargs)
                 if cache_key is not None:
                     self._cache_put(tool, cache_key, prov.name, result)
+                logger.info("'%s' served by %s in %.1fs", tool, prov.name, time.monotonic() - start)
                 return prov.name, result
             except (ProviderError, httpx.HTTPError) as exc:
+                logger.warning("provider %s failed '%s': %s", prov.name, tool, exc)
                 errors.append(f"{prov.name}: {exc}")
+        logger.error("'%s' failed on all providers", tool)
         raise NoProviderAvailable(f"all providers failed for '{tool}': " + "; ".join(errors))
 
     async def aclose(self) -> None:

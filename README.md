@@ -133,6 +133,7 @@ existing environment variables take precedence.
 | `PROVIDER_PRIORITY` | Selection order for auto-picked providers (default: recommended stack order). |
 | `HTTP_TIMEOUT` | HTTP timeout in seconds for provider API calls (default 60, connect 15). Raise for long Scrappey browser sequences. |
 | `CACHE_TTL` | TTL in seconds for cached `web_fetch` results (default 0 = off). Repeated identical fetches are served from the router cache instead of billing the provider. |
+| `LOG_LEVEL` | Log verbosity: `DEBUG`, `INFO` (default), `WARNING`, `ERROR`, `CRITICAL`. INFO logs which provider served each call; DEBUG adds cache hits. |
 
 ## How it works
 

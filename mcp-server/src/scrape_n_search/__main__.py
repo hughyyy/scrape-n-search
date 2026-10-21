@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import Path
 
@@ -15,6 +16,24 @@ from .server import build_server
 # Directory containing this package's project (…/mcp-server), used to locate
 # .env regardless of the process working directory.
 PROJECT_DIR = Path(__file__).resolve().parent.parent.parent
+
+
+def log_level_from_env() -> int:
+    """Logging level from LOG_LEVEL (default INFO)."""
+    raw = os.environ.get("LOG_LEVEL", "INFO")
+    level = getattr(logging, raw.upper(), None)
+    if not isinstance(level, int):
+        raise ValueError(
+            f"LOG_LEVEL must be one of DEBUG, INFO, WARNING, ERROR, CRITICAL, got {raw!r}"
+        )
+    return level
+
+
+def configure_logging() -> None:
+    logging.basicConfig(
+        level=log_level_from_env(),
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
 
 
 def build_router_from_env() -> Router:
@@ -50,6 +69,7 @@ def main() -> None:
     # are not overwritten.
     load_dotenv()
     load_dotenv(PROJECT_DIR / ".env")
+    configure_logging()
     router = build_router_from_env()
     server = build_server_from_env(router)
     # Provider clients are closed by the server lifespan (same event loop).

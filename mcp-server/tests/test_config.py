@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import logging
+
 import httpx
 import pytest
 
-from scrape_n_search.__main__ import build_router_from_env
+from scrape_n_search.__main__ import build_router_from_env, log_level_from_env
 from scrape_n_search.providers import build_providers, configured_timeout
 from scrape_n_search.providers.base import DEFAULT_TIMEOUT
 from scrape_n_search.router import Router
@@ -68,6 +70,22 @@ async def test_build_router_rejects_bad_cache_ttl(monkeypatch):
         monkeypatch.setenv("CACHE_TTL", bad)
         with pytest.raises(ValueError):
             build_router_from_env()
+
+
+def test_log_level_defaults_to_info(monkeypatch):
+    monkeypatch.delenv("LOG_LEVEL", raising=False)
+    assert log_level_from_env() == logging.INFO
+
+
+def test_log_level_reads_env(monkeypatch):
+    monkeypatch.setenv("LOG_LEVEL", "debug")
+    assert log_level_from_env() == logging.DEBUG
+
+
+def test_log_level_rejects_unknown(monkeypatch):
+    monkeypatch.setenv("LOG_LEVEL", "chatty")
+    with pytest.raises(ValueError, match="LOG_LEVEL"):
+        log_level_from_env()
 
 
 async def test_build_providers_without_client_uses_default_timeout():

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 
 import pytest
 
@@ -187,3 +188,14 @@ async def test_cache_key_includes_preferred_provider():
     await router.run("fetch", preferred="q", url="https://x")
     assert q.calls == 1
     assert p.calls == 1
+
+
+async def test_router_logs_serve_and_failover(caplog):
+    a = FakeProvider("a", {"search"}, fail=True)
+    b = FakeProvider("b", {"search"})
+    router = Router([a, b], priority=["a", "b"])
+    with caplog.at_level(logging.INFO, logger="scrape_n_search.router"):
+        name, _ = await router.run("search", query="q")
+    assert name == "b"
+    assert any("'search' served by b" in record.message for record in caplog.records)
+    assert any("provider a failed 'search'" in record.message for record in caplog.records)
