@@ -174,24 +174,34 @@ and add a normalisation test.
 
 ## Releases & packaging
 
-**Status**: no tags/releases yet; the package (`scrape-n-search-mcp`, v0.1.0 in
-`mcp-server/pyproject.toml`) is not on PyPI. Distribution today is the one-line setup
-above (GitHub source) or a git checkout.
+**Status**: MIT-licensed; CI (`pytest` on push/PR) and an automated release workflow
+run from GitHub (`ci.yml`, `release.yml`). First release: tag `v0.1.0` — see the
+releases page for the changelog and attached wheel/sdist. Distribution today is the
+one-line setup (GitHub source) or a git checkout; the package is not yet on PyPI.
 
-**Planned strategy**:
+**Release flow (fully automated from a tag)**:
 
-1. **GitHub Releases from tags.** Bump the version in `pyproject.toml`, then
-   `git tag v0.1.0 && git push origin v0.1.0` and `gh release create v0.1.0
-   --generate-notes`. Release notes can be auto-generated from commits; the tarball
-   GitHub attaches is exactly what the one-line installer already downloads
-   (`--ref v0.1.0` pins it).
-2. **PyPI package (`scrape-n-search-mcp`)** so MCP clients get the ecosystem one-liner
-   — Python MCP servers are conventionally consumed with `uvx scrape-n-search-mcp` or
-   `pipx run`/`pip install` in a venv. Publishing uses PyPI trusted publishing (GitHub
-   Actions OIDC, no long-lived token); requires claiming the project name on PyPI once.
-3. **Keep the curl one-liner** as the zero-dependency path (survives even without a
-   Python package registry); if it gets a short domain later, point it at a fixed
-   `install.sh` like other tools do (`curl -fsSL https://…/install | sh`).
+```bash
+git tag v0.1.1 && git push origin v0.1.1
+```
+
+The `release` workflow then: runs the tests, builds sdist + wheel, creates a GitHub
+Release with auto-generated notes and attaches the artifacts, and publishes to PyPI
+via trusted publishing (OIDC — no token). The PyPI step needs the publisher claimed
+once in PyPI admin (see below); until then that single job fails with a clear OIDC
+error and the GitHub release is unaffected. The one-line installer pins releases with
+`curl -fsSL <url> | bash -s -- --ref v0.1.1`.
+
+**PyPI setup (one-time, needs a PyPI account)**:
+
+1. Create an account at pypi.org.
+2. Account settings → **Publishing** → *Add a pending publisher*:
+   - Project name: `scrape-n-search-mcp`
+   - Owner: `hughyyy` · Repository: `scrape-n-search` · Workflow name: `release.yml`
+   - Environment: *(none)*
+3. Push the next `v*` tag — the release workflow publishes automatically.
+4. Verify on a clean machine: `uvx scrape-n-search-mcp` (or
+   `pipx run scrape-n-search-mcp`), then register it with your MCP client.
 
 **How MCP servers are usually distributed**: JavaScript servers ship via npm and are
 run with `npx -y <pkg>` (e.g. `npx -y firecrawl-mcp`); Python servers via PyPI under

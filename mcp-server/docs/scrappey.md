@@ -110,6 +110,11 @@ requires scrolling to trigger the lazy-load, clicking "View more", then extracti
 > (`filter:["markdown"]`) suppresses `execute_js` results. Use `format="html"` when
 > you need the `javascript_return` array.
 
+See the **`scrappey://playbook`** MCP resource (source:
+`src/scrape_n_search/playbook.md`) for recipes — e.g. reading a full AliExpress item
+description requires scrolling to trigger the lazy-load, clicking "View more", then
+extracting.
+
 ## Behavior notes (from live testing)
 
 - **Browser mode is slow** — roughly 20–40s per fetch (real browser render).

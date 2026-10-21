@@ -69,7 +69,7 @@ Keys/config live in `mcp-server/.env` (auto-loaded; see `.env.example`).
 - `mcp-server/src/scrape_n_search/providers/` — 8 provider adapters (`base.py` + one per provider)
 - `mcp-server/src/scrape_n_search/__main__.py` — entrypoint + `.env` loading + logging
 - `mcp-server/docs/scrappey.md` — full Scrappey documentation
-- `mcp-server/docs/playbook.md` — common-actions playbook (exposed as `scrappey://playbook` resource)
+- `mcp-server/src/scrape_n_search/playbook.md` — common-actions playbook (exposed as `scrappey://playbook` resource; packaged in the wheel)
 - `mcp-server/README.md` — full MCP server documentation
 
 ## Known issues / notes (from live testing)
@@ -102,10 +102,11 @@ Keys/config live in `mcp-server/.env` (auto-loaded; see `.env.example`).
 
 ## Open items / next steps
 
-- **Releases/packaging**: no tags or releases yet; not on PyPI. Planned: tag →
-  `gh release create --generate-notes`; publish `scrape-n-search-mcp` to PyPI with
-  trusted publishing (needs the PyPI project claimed) → `uvx scrape-n-search-mcp`.
-  One-line installer (`curl | bash`) is live and pipe-safe (tarball fetch into
+- **Releases/packaging**: MIT license, CI + release workflows live, `v0.1.0` released
+  (wheel/sdist attached). PyPI pending: claim `scrape-n-search-mcp` + trusted
+  publisher (owner hughyyy / repo scrape-n-search / workflow release.yml) in PyPI
+  admin, then push a tag to publish; verify with `uvx scrape-n-search-mcp`. One-line
+  installer (`curl | bash`) is live and pipe-safe (tarball fetch into
   `~/.local/share/scrape-n-search/src`, `--ref` pinning, EOF-safe --ask).
 - Cross-request session reuse (cookies/login state) is blocked by Scrappey's current
   request lifecycle — re-test when the vendor changes behavior.

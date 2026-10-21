@@ -91,8 +91,9 @@ page content plus any `execute_js` results. Served by Scrappey only.
 
 Response: `{provider, url, format, content, javascript_return[]}`
 
-See the **`scrappey://playbook`** resource (or `docs/playbook.md`) for recipes — e.g.
-reading a full AliExpress item description (scroll + click "View more" + extract).
+See the **`scrappey://playbook`** resource (or `src/scrape_n_search/playbook.md`) for
+recipes — e.g. reading a full AliExpress item description (scroll + click "View more" +
+extract).
 
 ### `web_screenshot`
 
@@ -209,7 +210,8 @@ session management (`web_session`)** in this MCP.
 
 Full documentation of its two modes, pricing, API, browser actions, and behavior:
 **[`docs/scrappey.md`](docs/scrappey.md)**. A common-actions playbook for agents is
-exposed as the **`scrappey://playbook`** MCP resource (source: `docs/playbook.md`).
+exposed as the **`scrappey://playbook`** MCP resource (source:
+`src/scrape_n_search/playbook.md`).
 
 ## Setup
 

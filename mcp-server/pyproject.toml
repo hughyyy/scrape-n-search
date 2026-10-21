@@ -6,12 +6,32 @@ build-backend = "setuptools.build_meta"
 name = "scrape-n-search-mcp"
 version = "0.1.0"
 description = "MCP server unifying web-search and scraping providers behind a few agent tools"
+readme = "README.md"
+license = "MIT"
 requires-python = ">=3.10"
 dependencies = [
   "mcp>=2.0",
   "httpx>=0.27",
   "python-dotenv>=1.0",
 ]
+keywords = ["mcp", "web-scraping", "search", "scraping", "agent", "llm"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Environment :: Console",
+  "Intended Audience :: Developers",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Internet :: WWW/HTTP",
+]
+
+[project.urls]
+Homepage = "https://github.com/hughyyy/scrape-n-search"
+Repository = "https://github.com/hughyyy/scrape-n-search"
+Documentation = "https://github.com/hughyyy/scrape-n-search/blob/main/README.md"
 
 [project.optional-dependencies]
 dev = ["pytest", "pytest-asyncio"]
@@ -21,6 +41,9 @@ scrape-n-search = "scrape_n_search.__main__:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+scrape_n_search = ["*.md"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

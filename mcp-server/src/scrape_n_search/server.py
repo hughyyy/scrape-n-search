@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from contextlib import asynccontextmanager
-from pathlib import Path
+from importlib import resources
 from typing import Literal
 
 from mcp.server.mcpserver import MCPServer
@@ -13,9 +13,6 @@ from . import __version__
 from .errors import NoProviderAvailable
 from .models import to_dict
 from .router import Router
-
-# Directory containing this project (…/mcp-server), used to locate docs/.
-PROJECT_DIR = Path(__file__).resolve().parent.parent.parent
 
 # capability -> unified tool name
 CAPABILITY_TO_TOOL = {
@@ -96,10 +93,9 @@ _PLAYBOOK_FALLBACK = (
 
 
 def _load_playbook() -> str:
-    path = PROJECT_DIR / "docs" / "playbook.md"
     try:
-        return path.read_text(encoding="utf-8")
-    except OSError:
+        return (resources.files("scrape_n_search") / "playbook.md").read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
         return _PLAYBOOK_FALLBACK
 
 
