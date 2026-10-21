@@ -102,12 +102,13 @@ Keys/config live in `mcp-server/.env` (auto-loaded; see `.env.example`).
 
 ## Open items / next steps
 
-- **Releases/packaging**: MIT license, CI + release workflows live, `v0.1.0` released
-  (wheel/sdist attached). PyPI pending: claim `scrape-n-search-mcp` + trusted
-  publisher (owner hughyyy / repo scrape-n-search / workflow release.yml) in PyPI
-  admin, then push a tag to publish; verify with `uvx scrape-n-search-mcp`. One-line
-  installer (`curl | bash`) is live and pipe-safe (tarball fetch into
-  `~/.local/share/scrape-n-search/src`, `--ref` pinning, EOF-safe --ask).
+- **Releases/packaging**: done — MIT license, CI + release workflows, v0.1.0 +
+  v0.1.1 published, **PyPI live** (`scrape-n-search-mcp`, trusted publishing verified,
+  fresh-venv `pip install` + server boot checked; uvx not installed on this machine,
+  verify `uvx scrape-n-search-mcp` elsewhere). Future releases: bump
+  pyproject.toml + `__init__.py` `__version__` in one commit, then
+  `git tag vX.Y.Z && git push origin vX.Y.Z`. One-line installer
+  (`curl | bash`) live and pipe-safe (`--ref` pins tags).
 - Cross-request session reuse (cookies/login state) is blocked by Scrappey's current
   request lifecycle — re-test when the vendor changes behavior.
 - Scrappey AI extraction is **not** exposed via the MCP (only fetch, browser actions,

@@ -175,33 +175,24 @@ and add a normalisation test.
 ## Releases & packaging
 
 **Status**: MIT-licensed; CI (`pytest` on push/PR) and an automated release workflow
-run from GitHub (`ci.yml`, `release.yml`). First release: tag `v0.1.0` — see the
-releases page for the changelog and attached wheel/sdist. Distribution today is the
-one-line setup (GitHub source) or a git checkout; the package is not yet on PyPI.
+run from GitHub (`ci.yml`, `release.yml`). **Published on PyPI as
+[`scrape-n-search-mcp`](https://pypi.org/project/scrape-n-search-mcp/)** (trusted
+publishing, no tokens). Releases: `v0.1.0` (first GitHub release) → `v0.1.1` (first
+PyPI release, wheel + sdist). Distribution channels: PyPI (`uvx scrape-n-search-mcp`),
+the one-line setup (GitHub source), or a git checkout.
 
 **Release flow (fully automated from a tag)**:
 
 ```bash
-git tag v0.1.1 && git push origin v0.1.1
+git tag v0.1.2 && git push origin v0.1.2
 ```
 
 The `release` workflow then: runs the tests, builds sdist + wheel, creates a GitHub
 Release with auto-generated notes and attaches the artifacts, and publishes to PyPI
-via trusted publishing (OIDC — no token). The PyPI step needs the publisher claimed
-once in PyPI admin (see below); until then that single job fails with a clear OIDC
-error and the GitHub release is unaffected. The one-line installer pins releases with
-`curl -fsSL <url> | bash -s -- --ref v0.1.1`.
-
-**PyPI setup (one-time, needs a PyPI account)**:
-
-1. Create an account at pypi.org.
-2. Account settings → **Publishing** → *Add a pending publisher*:
-   - Project name: `scrape-n-search-mcp`
-   - Owner: `hughyyy` · Repository: `scrape-n-search` · Workflow name: `release.yml`
-   - Environment: *(none)*
-3. Push the next `v*` tag — the release workflow publishes automatically.
-4. Verify on a clean machine: `uvx scrape-n-search-mcp` (or
-   `pipx run scrape-n-search-mcp`), then register it with your MCP client.
+via trusted publishing (OIDC — no token). Verify after each release on a clean
+machine: `uvx scrape-n-search-mcp` (or `pipx run scrape-n-search-mcp`), then register
+it with your MCP client. The one-line installer pins releases with
+`curl -fsSL <url> | bash -s -- --ref v0.1.2`.
 
 **How MCP servers are usually distributed**: JavaScript servers ship via npm and are
 run with `npx -y <pkg>` (e.g. `npx -y firecrawl-mcp`); Python servers via PyPI under
