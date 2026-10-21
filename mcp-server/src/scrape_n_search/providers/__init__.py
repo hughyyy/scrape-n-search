@@ -6,7 +6,7 @@ import os
 
 import httpx
 
-from .base import BaseProvider
+from .base import DEFAULT_TIMEOUT, BaseProvider
 from .exa import ExaProvider
 from .firecrawl import FirecrawlProvider
 from .jina import JinaProvider
@@ -18,6 +18,22 @@ from .zenrows import ZenRowsProvider
 
 # Default selection order: recommended stack first, cheap/fallback last.
 DEFAULT_PRIORITY = ["tinyfish", "tavily", "exa", "zenrows", "scrappey", "firecrawl", "serper", "jina"]
+
+
+def configured_timeout() -> httpx.Timeout:
+    """HTTP timeout for provider clients, from the HTTP_TIMEOUT env var (seconds).
+
+    Defaults to DEFAULT_TIMEOUT (60s total, 15s connect). Scrappey browser
+    requests routinely take 20-40s — raise this (e.g. 120s) for long
+    web_browser_actions sequences.
+    """
+    raw = os.environ.get("HTTP_TIMEOUT")
+    if not raw:
+        return DEFAULT_TIMEOUT
+    total = float(raw)
+    if total <= 0:
+        raise ValueError(f"HTTP_TIMEOUT must be a positive number of seconds, got {raw!r}")
+    return httpx.Timeout(total, connect=min(15.0, total))
 
 
 def build_providers(client: httpx.AsyncClient | None = None) -> list[BaseProvider]:

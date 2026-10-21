@@ -130,6 +130,7 @@ existing environment variables take precedence.
 | `DEFAULT_PROVIDER` | Provider used when a call omits `provider`. When set, tools that provider cannot serve are hidden from the client. |
 | `ENABLED_TOOLS` | Explicit tool allow-list, e.g. `web_fetch,web_browser_actions,web_screenshot`. Overrides the set derived from `DEFAULT_PROVIDER`. |
 | `PROVIDER_PRIORITY` | Selection order for auto-picked providers (default: recommended stack order). |
+| `HTTP_TIMEOUT` | HTTP timeout in seconds for provider API calls (default 60, connect 15). Raise for long Scrappey browser sequences. |
 
 ## How it works
 

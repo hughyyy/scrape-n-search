@@ -165,6 +165,7 @@ regardless of how it is launched. Existing environment variables take precedence
 | `DEFAULT_PROVIDER` | Provider used when a call omits `provider`. When set, tools that provider cannot serve are **hidden** from the client. |
 | `ENABLED_TOOLS` | Explicit comma-separated allow-list (`web_search,web_fetch,web_browser_actions,web_screenshot,web_crawl,web_extract`). Overrides the set derived from `DEFAULT_PROVIDER`. |
 | `PROVIDER_PRIORITY` | Selection order for auto-picked providers (default: recommended stack order). |
+| `HTTP_TIMEOUT` | HTTP timeout in seconds for provider API calls (default 60, connect 15). Scrappey browser requests take 20–40s — set 120 for long `web_browser_actions` sequences. |
 | `JINA_KEYLESS` | Set `0` to disable the keyless Jina fallback. |
 
 Example — Scrappey as the only/default provider (fetch + browser actions + screenshots):

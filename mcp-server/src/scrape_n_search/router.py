@@ -17,8 +17,14 @@ TOOLS = frozenset({"search", "fetch", "crawl", "extract", "browser_actions", "sc
 
 
 class Router:
-    def __init__(self, providers: list[BaseProvider], priority: list[str] | None = None):
+    def __init__(
+        self,
+        providers: list[BaseProvider],
+        priority: list[str] | None = None,
+        client: httpx.AsyncClient | None = None,
+    ):
         self._providers = {p.name: p for p in providers}
+        self._client = client
         if priority:
             self._order = [n for n in priority if n in self._providers] + [
                 n for n in self._providers if n not in priority
@@ -74,3 +80,5 @@ class Router:
     async def aclose(self) -> None:
         for prov in self._providers.values():
             await prov.aclose()
+        if self._client is not None:
+            await self._client.aclose()

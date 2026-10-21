@@ -5,9 +5,10 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+import httpx
 from dotenv import load_dotenv
 
-from .providers import DEFAULT_PRIORITY, build_providers
+from .providers import DEFAULT_PRIORITY, build_providers, configured_timeout
 from .router import Router
 from .server import build_server
 
@@ -17,10 +18,13 @@ PROJECT_DIR = Path(__file__).resolve().parent.parent.parent
 
 
 def build_router_from_env() -> Router:
-    providers = build_providers()
+    # One shared HTTP client for all providers (connection pooling + a single
+    # close point); the Router closes it in its lifespan teardown.
+    client = httpx.AsyncClient(timeout=configured_timeout())
+    providers = build_providers(client)
     priority_raw = os.environ.get("PROVIDER_PRIORITY")
     priority = [p.strip() for p in priority_raw.split(",") if p.strip()] if priority_raw else DEFAULT_PRIORITY
-    return Router(providers, priority=priority)
+    return Router(providers, priority=priority, client=client)
 
 
 def build_server_from_env(router: Router):
