@@ -12,7 +12,7 @@ unified agent tools.
 - **Two parts**:
   1. `research/` — verified comparison of search + scraping providers (pricing, free
      tiers, prepaid/credit models).
-  2. `mcp-server/` — an MCP server exposing 4 unified tools backed by 8 providers with
+  2. `mcp-server/` — an MCP server exposing 7 unified tools backed by 8 providers with
      automatic selection + failover.
 
 ## Current state (all verified)

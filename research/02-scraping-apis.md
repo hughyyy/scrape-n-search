@@ -47,7 +47,9 @@ residential proxies), so the client VPN IP is irrelevant.
 - API: `POST https://publisher.scrappey.com/api/v1?key=…` with
   `{"cmd": "request.get", "url": …, "markdown": true, "filter": ["markdown"]}` →
   `solution.{markdown|response|innerText}`.
-- No search/crawl endpoints — fetch only.
+- No search/crawl/extract endpoints — fetch, full-browser actions, screenshots, and
+  session management instead (exposed via web_fetch / web_browser_actions /
+  web_screenshot / web_session in the MCP).
 
 ## Key comparison
 

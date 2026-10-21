@@ -62,3 +62,5 @@ combined search + content extraction.
 - Free without an API key for basic use; new keys get 10M free tokens; charges then based
   on content length.
 - **Does not bypass anti-bot** — returns an error when blocked.
+- **Status (Oct 2026)**: `s.jina.ai` search now requires an API key (401 without);
+  keyless fetch via `r.jina.ai` still works.

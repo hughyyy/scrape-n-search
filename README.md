@@ -13,7 +13,7 @@ agentic coding and research tasks.
 
 ## Providers
 
-Nine capabilities, eight providers. [Scrappey](https://docs.scrappey.com) is the
+Seven capabilities, eight providers. [Scrappey](https://docs.scrappey.com) is the
 recommended default for scraping — it is the cheapest full-browser option in the
 research (€0.10/1K direct requests, €1/1K full browser), pay-as-you-go with no
 subscription, a balance that never expires, residential proxies included, and you only
@@ -30,9 +30,9 @@ pay for successful requests.
 | Serper | ✅ | | | | | | | `SERPER_API_KEY` |
 | Jina | ✅* | ✅ | | | | | | `JINA_API_KEY` (search; fetch is keyless) |
 
-`browser_actions` and `screenshot` are Scrappey-only capabilities (full-browser
-features). `*` `s.jina.ai` (search) now requires an API key; `r.jina.ai` (fetch) still
-works without one.
+`browser_actions`, `screenshot`, and `session` are Scrappey-only capabilities
+(full-browser features). `*` `s.jina.ai` (search) now requires an API key; `r.jina.ai`
+(fetch) still works without one.
 
 The router picks the first *enabled* provider (API key present) that supports the
 requested tool, in priority order, and fails over to the next one on error. Set
@@ -49,9 +49,9 @@ a specific provider; otherwise the default or auto-selected provider is used.
 | Tool | Description |
 | --- | --- |
 | `web_search` | `query` (required), `max_results` (5, 1–50), `freshness`, `country` → `{query, provider, results:[{title, url, snippet, published_date?, score?}]}` |
-| `web_fetch` | `url` (required), `format` (`markdown` \| `html`, enum), `js_render`, `premium_proxy`, `proxy_country` → `{provider, url, title?, format, content}` |
-| `web_browser_actions` | `url` + `actions[]` (required), `format`, `proxy_country` → `{provider, url, format, content, javascript_return[]}` |
-| `web_screenshot` | `url` (required), `full_page`, `selector`, `proxy_country` → `{provider, url, format: "png", screenshot_base64}` |
+| `web_fetch` | `url` (required), `format` (`markdown` \| `html`, enum), `js_render`, `premium_proxy`, `proxy_country`, `session` → `{provider, url, title?, format, content}` |
+| `web_browser_actions` | `url` + `actions[]` (required), `format`, `proxy_country`, `session` → `{provider, url, format, content, javascript_return[]}` |
+| `web_screenshot` | `url` (required), `full_page`, `selector`, `proxy_country`, `session` → `{provider, url, format: "png", screenshot_base64}` |
 | `web_session` | `op` (`create` \| `destroy`) (required), `session` (required) → `{provider, op, session, solution}` — Scrappey browser-session lifecycle; pass the name to the other tools as `session` |
 | `web_crawl` | `url` (required), `max_pages` (10, 1–100), `max_depth` (2, 1–10) → `{provider, pages:[{url, title?, content?}]}` |
 | `web_extract` | `url` (required), `prompt` → `{provider, url, data}` |
@@ -142,7 +142,8 @@ Each tool call is translated into the active provider's API request and the resp
 normalised into a shared model (`SearchResult`, `FetchedPage`, `CrawlPage`), so results
 look identical whichever provider served them. If the active provider errors, the
 router fails over to the next available one. The server itself speaks MCP over stdio —
-no state, no HTTP endpoint, one process.
+no database, no HTTP endpoint, one process (plus an optional in-memory fetch cache
+when `CACHE_TTL` is set).
 
 ## Development
 
@@ -150,7 +151,8 @@ no state, no HTTP endpoint, one process.
 .venv/bin/python -m pytest mcp-server/tests -q
 ```
 
-Unit tests cover per-provider response normalisation, router selection and failover,
-and the MCP surface end-to-end. To add a provider, subclass `BaseProvider`
+Unit tests cover per-provider response normalisation, router selection/failover/TTL
+cache, argument validation, configuration (timeouts, cache, logging), and the MCP
+surface end-to-end. To add a provider, subclass `BaseProvider`
 (`mcp-server/src/scrape_n_search/providers/base.py`), register it in `build_providers`,
 and add a normalisation test.

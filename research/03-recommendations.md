@@ -24,7 +24,8 @@ VPN IP never touches the target site.
      requests charged; residential premium proxies for protected sites; top-ups.
    - **Scrappey** — cheapest option (€1/1K full-browser, €0.10/1K direct), pure
      pay-as-you-go with no subscription and a balance that never expires; residential
-     proxies included; free trial, no card. Fetch only.
+     proxies included; free trial, no card. Fetch + full-browser features (actions,
+     screenshots, sessions) — no search/crawl/extract.
 
 3. **Pure prepaid no-subscription at scale:**
    - **Exa** — $20 free + $10/mo free-tier credits; load credits, no subscription/minimum.
