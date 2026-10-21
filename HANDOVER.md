@@ -55,6 +55,9 @@ unified agent tools.
 cd /mnt/shared/Source/scrape-n-search
 .venv/bin/python -m pytest mcp-server/tests -q   # tests
 .venv/bin/scrape-n-search                         # stdio MCP server
+
+# any machine, one line:
+curl -fsSL https://raw.githubusercontent.com/hughyyy/scrape-n-search/main/install.sh | bash
 ```
 
 Keys/config live in `mcp-server/.env` (auto-loaded; see `.env.example`).
@@ -99,6 +102,11 @@ Keys/config live in `mcp-server/.env` (auto-loaded; see `.env.example`).
 
 ## Open items / next steps
 
+- **Releases/packaging**: no tags or releases yet; not on PyPI. Planned: tag →
+  `gh release create --generate-notes`; publish `scrape-n-search-mcp` to PyPI with
+  trusted publishing (needs the PyPI project claimed) → `uvx scrape-n-search-mcp`.
+  One-line installer (`curl | bash`) is live and pipe-safe (tarball fetch into
+  `~/.local/share/scrape-n-search/src`, `--ref` pinning, EOF-safe --ask).
 - Cross-request session reuse (cookies/login state) is blocked by Scrappey's current
   request lifecycle — re-test when the vendor changes behavior.
 - Scrappey AI extraction is **not** exposed via the MCP (only fetch, browser actions,

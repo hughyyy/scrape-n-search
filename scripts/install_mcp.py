@@ -229,7 +229,10 @@ def register_harness(
         out.append(f"  {h.id}: [dry-run] would register {target} -> {json.dumps(entry)}")
         return out
     if ask:
-        reply = input(f"  register {h.id} -> {target}? [y/N] ").strip().lower()
+        try:
+            reply = input(f"  register {h.id} -> {target}? [y/N] ").strip().lower()
+        except EOFError:
+            reply = ""  # non-interactive stdin: treat as declined
         if reply != "y":
             out.append(f"  {h.id}: skipped (declined)")
             return out

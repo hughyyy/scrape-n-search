@@ -85,6 +85,27 @@ def test_register_merges_and_preserves_others(tmp_path, monkeypatch, harnesses):
     assert target.with_name(target.name + ".backup").exists()
 
 
+def test_ask_declines_on_noninteractive_stdin(tmp_path, monkeypatch, harnesses):
+    """--ask on a piped stdin (curl | bash) must degrade to 'declined', not crash."""
+    home = tmp_path / "home"
+    target = home / ".omp" / "agent" / "mcp.json"
+    _mk(target, {"mcpServers": {}})
+
+    def _eof(_prompt):
+        raise EOFError
+
+    monkeypatch.setattr("builtins.input", _eof)
+    h = harnesses["omp"]
+    lines = install_mcp.register_harness(
+        h, "/venv/bin/python", "/repo/mcp-server", 120000,
+        install_mcp.repo_root(), home=home, ask=True,
+    )
+    assert any("skipped (declined)" in ln for ln in lines)
+    # nothing written, no backup
+    assert json.loads(target.read_text(encoding="utf-8"))["mcpServers"] == {}
+    assert not target.with_name(target.name + ".backup").exists()
+
+
 def test_register_is_idempotent(tmp_path, harnesses):
     home = tmp_path / "home"
     target = home / ".omp" / "agent" / "mcp.json"
