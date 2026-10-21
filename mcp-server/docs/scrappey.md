@@ -17,9 +17,10 @@ provider — the cheapest option in the research and the current default.
 
 ## Capability in this MCP
 
-`fetch`, `browser_actions`, and `screenshot`. Scrappey has no search/crawl/extract
-endpoints; with `DEFAULT_PROVIDER=scrappey` the MCP hides `web_search`, `web_crawl`,
-and `web_extract`, exposing `web_fetch`, `web_browser_actions`, and `web_screenshot`.
+`fetch`, `browser_actions`, `screenshot`, and `session` (create/destroy). Scrappey has
+no search/crawl/extract endpoints; with `DEFAULT_PROVIDER=scrappey` the MCP hides
+`web_search`, `web_crawl`, and `web_extract`, exposing `web_fetch`,
+`web_browser_actions`, `web_screenshot`, and `web_session`.
 
 ## Tools
 
@@ -28,6 +29,7 @@ and `web_extract`, exposing `web_fetch`, `web_browser_actions`, and `web_screens
 | `web_fetch` | fetch | basic (`js_render=false`) or browser (`js_render=true`) mode |
 | `web_browser_actions` | browser actions | run a sequence of `browserActions` and return page content + `execute_js` results |
 | `web_screenshot` | screenshot | base64 PNG; `full_page` or `selector` capture |
+| `web_session` | sessions | `op=create` / `op=destroy` lifecycle (`sessions.create` / `sessions.destroy`) |
 
 ## Two fetch modes (mapped from `web_fetch` params)
 
@@ -77,12 +79,16 @@ requested. (Requesting markdown in basic mode otherwise errors with
 
 ## What this MCP exposes vs. what Scrappey offers
 
-The MCP exposes fetch, browser actions, and screenshots as unified tools. Scrappey also
-offers features that are **not** exposed through the MCP (use Scrappey's direct API for
-these):
+The MCP exposes fetch, browser actions, screenshots, and session management
+(`sessions.create` / `sessions.destroy` via `web_session`) as unified tools. Scrappey
+also offers features that are **not** exposed through the MCP (use Scrappey's direct
+API for these):
 
-- **Session management** — persistent browser sessions (`session`), `sessions.create`,
-  cookies, localStorage, `pageUrl` warm-up.
+- **Session management caveat (verified 2026-10)** — the create/destroy lifecycle
+  works, but a named session is destroyed once a `request.get` completes, so cookies
+  and browser state do **not** persist across requests yet, despite the vendor docs
+  (tested with custom names, UUIDs, browser and basic mode).
+- **Persistent profiles** — state that survives beyond a session (not exposed).
 - **AI extraction** — GPT-4 powered structured extraction (separate feature).
 - **Custom proxies** — `proxy` (http/socks), `customHeaders`, `build` selection.
 

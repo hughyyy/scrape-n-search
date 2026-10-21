@@ -13,8 +13,8 @@ that target sites reject) is never seen by the target site.
 MCP client (agent)
    │  MCP stdio protocol
    ▼
-MCPServer (server.py) ── 6 tools: web_search, web_fetch, web_browser_actions,
-                                 web_screenshot, web_crawl, web_extract
+MCPServer (server.py) ── 7 tools: web_search, web_fetch, web_browser_actions,
+                                 web_screenshot, web_session, web_crawl, web_extract
    │
    ▼
 Router (router.py) ── picks provider by priority + capability, fails over on error
@@ -23,7 +23,7 @@ Router (router.py) ── picks provider by priority + capability, fails over on
    ├── Tavily     (search, fetch)
    ├── Exa        (search, fetch)
    ├── ZenRows    (fetch, extract)
-   ├── Scrappey   (fetch, browser_actions, screenshot)
+   ├── Scrappey   (fetch, browser_actions, screenshot, session)
    ├── Firecrawl  (search, fetch, crawl, extract)
    ├── Serper     (search)
    └── Jina       (search*, fetch)
@@ -71,6 +71,7 @@ Fetch a URL to clean content, server-side.
 | `js_render` | bool | false | render JS (Scrappey browser mode; ZenRows `js_render`) |
 | `premium_proxy` | bool | false | residential proxy routing (Scrappey: always on; ZenRows `premium_proxy`) |
 | `proxy_country` | string? | null | pin the Scrappey residential proxy region (e.g. `UnitedStates`); otherwise geo varies per request |
+| `session` | string? | null | attach the request to a Scrappey session (see `web_session`; state does not persist across calls) |
 
 Response: `{provider, url, title?, format, content}`
 
@@ -86,6 +87,7 @@ page content plus any `execute_js` results. Served by Scrappey only.
 | `format` | string | `markdown` | `markdown` \| `html`. Use `html` to receive `execute_js` results in `javascript_return` (the markdown filter suppresses them). |
 | `provider` | string? | null | |
 | `proxy_country` | string? | null | pin the Scrappey residential proxy region (e.g. `UnitedStates`) |
+| `session` | string? | null | attach to a Scrappey session (see `web_session`) |
 
 Response: `{provider, url, format, content, javascript_return[]}`
 
@@ -104,8 +106,28 @@ by Scrappey only.
 | `selector` | string? | null |
 | `provider` | string? | null |
 | `proxy_country` | string? | null | pin the Scrappey residential proxy region (e.g. `UnitedStates`) |
+| `session` | string? | null | attach to a Scrappey session (see `web_session`) |
 
 Response: `{provider, url, format: "png", screenshot_base64}`
+
+### `web_session`
+
+Manage Scrappey browser-session lifecycle (Scrappey-only). Create a session, attach
+requests to it via the `session` parameter of `web_fetch` / `web_browser_actions` /
+`web_screenshot`, and destroy it when done.
+
+| Param | Type | Default | Notes |
+|---|---|---|---|
+| `op` | string | — | `create` \| `destroy` (enum) |
+| `session` | string | — | required — session name |
+| `provider` | string? | null | |
+
+Response: `{provider, op, session, solution}`
+
+> **Known limitation (verified 2026-10):** the create/destroy lifecycle works, but
+> Scrappey currently destroys a named session once a `request.get` completes, so
+> cookies/browser state do **not** persist across calls yet despite the vendor docs.
+> Treat `session` as a lifecycle-managed name; re-create sessions as needed.
 
 ### `web_crawl`
 
@@ -135,16 +157,16 @@ Response: `{provider, url, data}`
 
 ## Provider coverage
 
-| Provider | search | fetch | browser_actions | screenshot | crawl | extract | Requires |
-|---|---|---|---|---|---|---|---|
-| TinyFish | ✅ | ✅ | | | | | `TINYFISH_API_KEY` |
-| Tavily | ✅ | ✅ | | | | | `TAVILY_API_KEY` |
-| Exa | ✅ | ✅ | | | | | `EXA_API_KEY` |
-| ZenRows | | ✅ | | | | ✅ | `ZENROWS_API_KEY` |
-| **Scrappey** | | ✅ | ✅ | ✅ | | | `SCRAPPEY_API_KEY` |
-| Firecrawl | ✅ | ✅ | | | ✅ | ✅ | `FIRECRAWL_API_KEY` |
-| Serper | ✅ | | | | | | `SERPER_API_KEY` |
-| Jina | ✅* | ✅ | | | | | `JINA_API_KEY` for search; fetch is keyless |
+| Provider | search | fetch | browser_actions | screenshot | session | crawl | extract | Requires |
+|---|---|---|---|---|---|---|---|---|
+| TinyFish | ✅ | ✅ | | | | | | `TINYFISH_API_KEY` |
+| Tavily | ✅ | ✅ | | | | | | `TAVILY_API_KEY` |
+| Exa | ✅ | ✅ | | | | | | `EXA_API_KEY` |
+| ZenRows | | ✅ | | | | | ✅ | `ZENROWS_API_KEY` |
+| **Scrappey** | | ✅ | ✅ | ✅ | ✅ | | | `SCRAPPEY_API_KEY` |
+| Firecrawl | ✅ | ✅ | | | | ✅ | ✅ | `FIRECRAWL_API_KEY` |
+| Serper | ✅ | | | | | | | `SERPER_API_KEY` |
+| Jina | ✅* | ✅ | | | | | | `JINA_API_KEY` for search; fetch is keyless |
 
 `browser_actions` and `screenshot` are Scrappey-only capabilities (full-browser
 features). `*` `s.jina.ai` (search) now requires an API key; `r.jina.ai` (fetch) still
@@ -180,8 +202,8 @@ DEFAULT_PROVIDER=scrappey   # hides web_search/web_crawl/web_extract
 
 Scrappey is the cheapest scraping option in the research (€0.10/1K direct, €1/1K full
 browser; pay-as-you-go, no subscription, balance never expires, residential proxies
-included, pay-per-success). It provides **fetch, browser actions, and screenshots** in
-this MCP.
+included, pay-per-success). It provides **fetch, browser actions, screenshots, and
+session management (`web_session`)** in this MCP.
 
 Full documentation of its two modes, pricing, API, browser actions, and behavior:
 **[`docs/scrappey.md`](docs/scrappey.md)**. A common-actions playbook for agents is

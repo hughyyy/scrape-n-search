@@ -25,6 +25,7 @@ CAPABILITY_TO_TOOL = {
     "extract": "web_extract",
     "browser_actions": "web_browser_actions",
     "screenshot": "web_screenshot",
+    "session": "web_session",
 }
 
 _TOOL_DESCRIPTIONS = {
@@ -38,8 +39,9 @@ _TOOL_DESCRIPTIONS = {
         "infrastructure, so the caller's IP is never seen by the target site. "
         "js_render=false uses Scrappey basic mode (raw HTML, cheap); js_render=true uses full browser "
         "mode (JS rendering, markdown). proxy_country pins the Scrappey residential proxy region "
-        "(e.g. 'UnitedStates') — otherwise the geo varies per request. "
-        "Prefer old.reddit.com over www.reddit.com for Reddit."
+        "(e.g. 'UnitedStates') — otherwise the geo varies per request. session=<name> attaches the "
+        "request to a Scrappey session managed via web_session (see its known-limitation note on "
+        "cross-request state). Prefer old.reddit.com over www.reddit.com for Reddit."
     ),
     "web_crawl": (
         "Recursively crawl a domain and return discovered pages with their content. Provider is "
@@ -63,6 +65,14 @@ _TOOL_DESCRIPTIONS = {
         "Capture a screenshot of a URL (full browser mode) and return it as base64 PNG. "
         "full_page=true for a full-page capture; selector captures a specific element. "
         "proxy_country pins the residential proxy region (e.g. 'UnitedStates')."
+    ),
+    "web_session": (
+        "Manage Scrappey browser sessions: op='create' starts a session, op='destroy' shuts it "
+        "down (also frees resources when you are done). Pass the session name as the 'session' "
+        "parameter of web_fetch, web_browser_actions, or web_screenshot to attach requests to it. "
+        "KNOWN LIMITATION (verified 2026-10): Scrappey currently destroys a named session once a "
+        "request completes, so cookies/browser state do not persist across calls yet — the "
+        "create/destroy lifecycle works, cross-request reuse does not."
     ),
 }
 
@@ -179,6 +189,7 @@ def build_server(
             js_render: bool = False,
             premium_proxy: bool = False,
             proxy_country: str | None = None,
+            session: str | None = None,
         ) -> str:
             try:
                 name, page = await router.run(
@@ -189,6 +200,7 @@ def build_server(
                     js_render=js_render,
                     premium_proxy=premium_proxy,
                     proxy_country=proxy_country,
+                    session=session,
                 )
             except NoProviderAvailable as exc:
                 return json.dumps({"error": str(exc)})
@@ -203,6 +215,7 @@ def build_server(
             format: Literal["markdown", "html"] = "markdown",
             provider: str | None = None,
             proxy_country: str | None = None,
+            session: str | None = None,
         ) -> str:
             if not actions:
                 return json.dumps({"error": "actions must be a non-empty list of Scrappey action objects"})
@@ -214,6 +227,7 @@ def build_server(
                     actions=actions,
                     format=format,
                     proxy_country=proxy_country,
+                    session=session,
                 )
             except NoProviderAvailable as exc:
                 return json.dumps({"error": str(exc)})
@@ -228,6 +242,7 @@ def build_server(
             selector: str | None = None,
             provider: str | None = None,
             proxy_country: str | None = None,
+            session: str | None = None,
         ) -> str:
             try:
                 name, img = await router.run(
@@ -237,10 +252,29 @@ def build_server(
                     full_page=full_page,
                     selector=selector,
                     proxy_country=proxy_country,
+                    session=session,
                 )
             except NoProviderAvailable as exc:
                 return json.dumps({"error": str(exc)})
             return json.dumps({"provider": name, "url": url, "format": "png", "screenshot_base64": img})
+
+    if "web_session" in enabled_tools:
+
+        @server.tool(name="web_session", description=_TOOL_DESCRIPTIONS["web_session"])
+        async def web_session(
+            op: Literal["create", "destroy"],
+            session: str,
+            provider: str | None = None,
+        ) -> str:
+            if not session:
+                return json.dumps({"error": "session name is required"})
+            try:
+                name, result = await router.run(
+                    "session", preferred=_preferred(provider), op=op, session=session
+                )
+            except NoProviderAvailable as exc:
+                return json.dumps({"error": str(exc)})
+            return json.dumps({"provider": name, **result})
 
     if "web_crawl" in enabled_tools:
 

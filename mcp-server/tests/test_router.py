@@ -102,3 +102,15 @@ async def test_unknown_tool():
     router = make_router(FakeProvider("a", {"search"}))
     with pytest.raises(NoProviderAvailable):
         await router.run("bogus", query="q")
+
+
+class SessionProvider(FakeProvider):
+    async def session(self, op: str, session: str, **kw):
+        return {"op": op, "session": session}
+
+
+async def test_session_tool_dispatch():
+    router = make_router(SessionProvider("a", {"session"}))
+    name, result = await router.run("session", op="create", session="s1")
+    assert name == "a"
+    assert result == {"op": "create", "session": "s1"}

@@ -10,6 +10,9 @@ Scrappey. This playbook is exposed as the `scrappey://playbook` MCP resource.
 - `web_browser_actions` — run a sequence of browser actions on a page (click, scroll,
   type, execute_js, wait…) and return the page content plus any `execute_js` results.
 - `web_screenshot` — capture a screenshot (base64 PNG).
+- `web_session` — create/destroy Scrappey browser sessions; pass the name to the other
+  tools via `session=`. Note: Scrappey currently destroys a named session once a
+  request completes, so cookies/state do not persist across calls (verified 2026-10).
 
 ## General rules
 

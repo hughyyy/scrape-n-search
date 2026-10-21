@@ -19,7 +19,7 @@ BASE = "https://publisher.scrappey.com/api/v1"
 
 class ScrappeyProvider(BaseProvider):
     name = "scrappey"
-    capabilities = frozenset({"fetch", "browser_actions", "screenshot"})
+    capabilities = frozenset({"fetch", "browser_actions", "screenshot", "session"})
 
     def __init__(self, api_key: str | None, client: httpx.AsyncClient | None = None):
         super().__init__(client)
@@ -37,6 +37,7 @@ class ScrappeyProvider(BaseProvider):
         js_render: bool = True,
         premium_proxy: bool = True,
         proxy_country: str | None = None,
+        session: str | None = None,
         **kw,
     ) -> FetchedPage:
         want_markdown = format == "markdown"
@@ -54,6 +55,8 @@ class ScrappeyProvider(BaseProvider):
         # always effectively enabled; the flag is accepted for interface parity.
         if proxy_country:
             body["proxyCountry"] = proxy_country
+        if session:
+            body["session"] = session
 
         data = await self._request_json("POST", f"{BASE}?key={self.api_key}", json=body)
         if data.get("data") != "success":
@@ -79,6 +82,7 @@ class ScrappeyProvider(BaseProvider):
         actions: list[dict],
         format: str = "markdown",
         proxy_country: str | None = None,
+        session: str | None = None,
         **kw,
     ) -> BrowserActionsResult:
         """Run a sequence of browser actions on a page (full browser mode).
@@ -101,6 +105,8 @@ class ScrappeyProvider(BaseProvider):
             body["filter"] = ["markdown"]
         if proxy_country:
             body["proxyCountry"] = proxy_country
+        if session:
+            body["session"] = session
 
         data = await self._request_json("POST", f"{BASE}?key={self.api_key}", json=body)
         if data.get("data") != "success":
@@ -124,6 +130,7 @@ class ScrappeyProvider(BaseProvider):
         full_page: bool = False,
         selector: str | None = None,
         proxy_country: str | None = None,
+        session: str | None = None,
         **kw,
     ) -> str:
         """Capture a screenshot (full browser mode). Returns base64-encoded image."""
@@ -136,6 +143,8 @@ class ScrappeyProvider(BaseProvider):
             body["screenshot"] = True
         if proxy_country:
             body["proxyCountry"] = proxy_country
+        if session:
+            body["session"] = session
 
         data = await self._request_json("POST", f"{BASE}?key={self.api_key}", json=body)
         if data.get("data") != "success":
@@ -145,3 +154,26 @@ class ScrappeyProvider(BaseProvider):
         if not img:
             raise ProviderError("scrappey screenshot: no screenshot returned in response")
         return img
+
+    async def session(self, op: str, session: str, **kw) -> dict:
+        """Create or destroy a browser session.
+
+        ``create`` returns success immediately; ``destroy`` shuts the session
+        down. Request-level reuse is not yet reliable: live testing (2026-10)
+        shows Scrappey destroys a named session when a request.get completes,
+        so cookies/state do not persist across requests despite the vendor
+        docs.
+        """
+        bodies = {"create": "sessions.create", "destroy": "sessions.destroy"}
+        if op not in bodies:
+            raise ProviderError(
+                f"scrappey session: unknown op '{op}' (expected 'create' or 'destroy')"
+            )
+        if not session:
+            raise ProviderError("scrappey session: session name is required")
+        data = await self._request_json(
+            "POST", f"{BASE}?key={self.api_key}", json={"cmd": bodies[op], "session": session}
+        )
+        if data.get("data") != "success":
+            raise ProviderError(f"scrappey session {op} failed: {data.get('data', data)}")
+        return {"op": op, "session": session, "solution": data.get("solution", {})}

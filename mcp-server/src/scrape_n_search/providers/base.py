@@ -53,6 +53,10 @@ class BaseProvider:
         self._require("extract")
         raise ProviderError(f"provider '{self.name}' extract not implemented")
 
+    async def session(self, op: str, session: str = "", **kw):
+        self._require("session")
+        raise ProviderError(f"provider '{self.name}' session not implemented")
+
     async def _request_json(
         self,
         method: str,

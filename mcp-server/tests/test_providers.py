@@ -355,6 +355,84 @@ async def test_scrappey_disabled_without_key():
     assert not ScrappeyProvider(None).enabled
 
 
+async def test_scrappey_session_create():
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.read())
+        assert body == {"cmd": "sessions.create", "session": "s1"}
+        return httpx.Response(
+            200,
+            json={"data": "success", "solution": {"session": "s1"}},
+        )
+
+    provider = ScrappeyProvider("k", make_client(handler))
+    result = await provider.session("create", "s1")
+    assert result["session"] == "s1"
+    assert result["op"] == "create"
+
+
+async def test_scrappey_session_destroy():
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.read())
+        assert body == {"cmd": "sessions.destroy", "session": "s1"}
+        return httpx.Response(200, json={"data": "success", "solution": {}})
+
+    provider = ScrappeyProvider("k", make_client(handler))
+    result = await provider.session("destroy", "s1")
+    assert result["op"] == "destroy"
+
+
+async def test_scrappey_session_unknown_op_raises():
+    from scrape_n_search.errors import ProviderError
+
+    provider = ScrappeyProvider("k", make_client(lambda r: httpx.Response(200, json={})))
+    with pytest.raises(ProviderError, match="unknown op"):
+        await provider.session("pause", "s1")
+
+
+async def test_scrappey_session_empty_name_raises():
+    from scrape_n_search.errors import ProviderError
+
+    provider = ScrappeyProvider("k", make_client(lambda r: httpx.Response(200, json={})))
+    with pytest.raises(ProviderError, match="session name is required"):
+        await provider.session("create", "")
+
+
+async def test_scrappey_session_failure_raises():
+    from scrape_n_search.errors import ProviderError
+
+    provider = ScrappeyProvider(
+        "k", make_client(lambda r: httpx.Response(200, json={"data": "error", "solution": {}}))
+    )
+    with pytest.raises(ProviderError, match="session create failed"):
+        await provider.session("create", "s1")
+
+
+async def test_scrappey_fetch_uses_session():
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.read())
+        assert body["session"] == "s1"
+        assert body["requestType"] == "browser"
+        return httpx.Response(
+            200,
+            json={"solution": {"response": "<html>logged in</html>"}, "data": "success"},
+        )
+
+    provider = ScrappeyProvider("k", make_client(handler))
+    page = await provider.fetch("https://example.com", session="s1", js_render=True, format="html")
+    assert page.content == "<html>logged in</html>"
+
+
+async def test_scrappey_actions_and_screenshot_use_session():
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.read())
+        assert body["session"] == "s1"
+        return httpx.Response(200, json={"solution": {"response": "x", "screenshot": "img"}, "data": "success"})
+
+    provider = ScrappeyProvider("k", make_client(handler))
+    await provider.browser_actions("https://example.com", actions=[{"type": "wait", "wait": 1}], session="s1")
+    await provider.screenshot("https://example.com", session="s1")
+
+
 async def test_unsupported_tool_raises():
     from scrape_n_search.errors import ProviderError
 

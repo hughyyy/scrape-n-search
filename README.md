@@ -2,8 +2,8 @@
 
 A lightweight [MCP](https://modelcontextprotocol.io) server that gives agents web search
 and scraping behind a few simple tools — **web_search, web_fetch, web_browser_actions,
-web_screenshot, web_crawl, web_extract** — backed by multiple providers and normalised
-into one consistent result shape.
+web_screenshot, web_session, web_crawl, web_extract** — backed by multiple providers and
+normalised into one consistent result shape.
 
 Every request is executed **server-side**: the provider fetches from its own IP pool, so
 the client's IP (including a VPN IP that many sites block) never reaches the target
@@ -19,16 +19,16 @@ research (€0.10/1K direct requests, €1/1K full browser), pay-as-you-go with 
 subscription, a balance that never expires, residential proxies included, and you only
 pay for successful requests.
 
-| Provider | search | fetch | browser_actions | screenshot | crawl | extract | Requires |
-| --- | :-: | :-: | :-: | :-: | :-: | :-: | --- |
-| TinyFish | ✅ | ✅ | | | | | `TINYFISH_API_KEY` |
-| Tavily | ✅ | ✅ | | | | | `TAVILY_API_KEY` |
-| Exa | ✅ | ✅ | | | | | `EXA_API_KEY` |
-| ZenRows | | ✅ | | | | ✅ | `ZENROWS_API_KEY` |
-| **Scrappey** *(recommended)* | | ✅ | ✅ | ✅ | | | `SCRAPPEY_API_KEY` |
-| Firecrawl | ✅ | ✅ | | | ✅ | ✅ | `FIRECRAWL_API_KEY` |
-| Serper | ✅ | | | | | | `SERPER_API_KEY` |
-| Jina | ✅* | ✅ | | | | | `JINA_API_KEY` (search; fetch is keyless) |
+| Provider | search | fetch | browser_actions | screenshot | session | crawl | extract | Requires |
+| --- | :-: | :-: | :-: | :-: | :-: | :-: | :-: | --- |
+| TinyFish | ✅ | ✅ | | | | | | `TINYFISH_API_KEY` |
+| Tavily | ✅ | ✅ | | | | | | `TAVILY_API_KEY` |
+| Exa | ✅ | ✅ | | | | | | `EXA_API_KEY` |
+| ZenRows | | ✅ | | | | | ✅ | `ZENROWS_API_KEY` |
+| **Scrappey** *(recommended)* | | ✅ | ✅ | ✅ | ✅ | | | `SCRAPPEY_API_KEY` |
+| Firecrawl | ✅ | ✅ | | | | ✅ | ✅ | `FIRECRAWL_API_KEY` |
+| Serper | ✅ | | | | | | | `SERPER_API_KEY` |
+| Jina | ✅* | ✅ | | | | | | `JINA_API_KEY` (search; fetch is keyless) |
 
 `browser_actions` and `screenshot` are Scrappey-only capabilities (full-browser
 features). `*` `s.jina.ai` (search) now requires an API key; `r.jina.ai` (fetch) still
@@ -52,6 +52,7 @@ a specific provider; otherwise the default or auto-selected provider is used.
 | `web_fetch` | `url` (required), `format` (`markdown` \| `html`, enum), `js_render`, `premium_proxy`, `proxy_country` → `{provider, url, title?, format, content}` |
 | `web_browser_actions` | `url` + `actions[]` (required), `format`, `proxy_country` → `{provider, url, format, content, javascript_return[]}` |
 | `web_screenshot` | `url` (required), `full_page`, `selector`, `proxy_country` → `{provider, url, format: "png", screenshot_base64}` |
+| `web_session` | `op` (`create` \| `destroy`) (required), `session` (required) → `{provider, op, session, solution}` — Scrappey browser-session lifecycle; pass the name to the other tools as `session` |
 | `web_crawl` | `url` (required), `max_pages` (10, 1–100), `max_depth` (2, 1–10) → `{provider, pages:[{url, title?, content?}]}` |
 | `web_extract` | `url` (required), `prompt` → `{provider, url, data}` |
 

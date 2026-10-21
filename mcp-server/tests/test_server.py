@@ -39,7 +39,15 @@ async def test_lists_all_tools():
     async with client_for(Router([FakeProvider()])) as session:
         tools = await session.list_tools()
         names = {t.name for t in tools.tools}
-        assert names == {"web_search", "web_fetch", "web_crawl", "web_extract", "web_browser_actions", "web_screenshot"}
+        assert names == {
+            "web_search",
+            "web_fetch",
+            "web_crawl",
+            "web_extract",
+            "web_browser_actions",
+            "web_screenshot",
+            "web_session",
+        }
         schemas = {t.name: t.input_schema for t in tools.tools}
         # provider is an optional param on every tool
         assert "provider" in schemas["web_search"]["properties"]
@@ -150,7 +158,7 @@ async def test_enabled_tools_allow_list():
 
 class BrowserProvider(BaseProvider):
     name = "scrappey"
-    capabilities = frozenset({"fetch", "browser_actions", "screenshot"})
+    capabilities = frozenset({"fetch", "browser_actions", "screenshot", "session"})
 
     async def fetch(self, url: str, **kw) -> FetchedPage:
         return FetchedPage(url=url, content="# Hello", title="T")
@@ -161,10 +169,13 @@ class BrowserProvider(BaseProvider):
     async def screenshot(self, url: str, **kw) -> str:
         return "aGVsbG8="
 
+    async def session(self, op: str, session: str, **kw):
+        return {"op": op, "session": session, "solution": {"session": session}}
+
 
 async def test_default_provider_exposes_new_tools():
     names = await _list_names(Router([BrowserProvider()]), default_provider="scrappey")
-    assert names == {"web_fetch", "web_browser_actions", "web_screenshot"}
+    assert names == {"web_fetch", "web_browser_actions", "web_screenshot", "web_session"}
 
 
 async def test_browser_actions_tool_call():
@@ -203,7 +214,7 @@ class RecordingProvider(BaseProvider):
     """Scrappey-shaped provider that records the kwargs each call received."""
 
     name = "scrappey"
-    capabilities = frozenset({"fetch", "browser_actions", "screenshot"})
+    capabilities = frozenset({"fetch", "browser_actions", "screenshot", "session"})
 
     def __init__(self):
         super().__init__()
@@ -220,6 +231,10 @@ class RecordingProvider(BaseProvider):
     async def screenshot(self, url: str, **kw) -> str:
         self.calls["screenshot"] = kw
         return "aGVsbG8="
+
+    async def session(self, op: str, session: str, **kw):
+        self.calls["session"] = {"op": op, "session": session}
+        return {"op": op, "session": session, "solution": {"session": session}}
 
 
 async def test_proxy_country_passed_to_fetch():
@@ -290,3 +305,46 @@ async def test_empty_actions_rejected():
         res = await session.call_tool("web_browser_actions", {"url": "https://x", "actions": []})
         payload = json.loads(res.content[0].text)
         assert "non-empty list" in payload["error"]
+
+
+async def test_web_session_create_and_destroy():
+    provider = RecordingProvider()
+    async with client_for(Router([provider]), default_provider="scrappey") as session:
+        res = await session.call_tool("web_session", {"op": "create", "session": "s1"})
+        payload = json.loads(res.content[0].text)
+        assert payload["provider"] == "scrappey"
+        assert payload["op"] == "create"
+        assert payload["session"] == "s1"
+        res = await session.call_tool("web_session", {"op": "destroy", "session": "s1"})
+        assert json.loads(res.content[0].text)["op"] == "destroy"
+        assert provider.calls["session"] == {"op": "destroy", "session": "s1"}
+
+
+async def test_web_session_empty_name_rejected():
+    async with client_for(Router([RecordingProvider()])) as session:
+        res = await session.call_tool("web_session", {"op": "create", "session": ""})
+        payload = json.loads(res.content[0].text)
+        assert "session name is required" in payload["error"]
+
+
+async def test_session_passed_to_fetch_actions_screenshot():
+    provider = RecordingProvider()
+    async with client_for(Router([provider])) as session:
+        await session.call_tool("web_fetch", {"url": "https://x", "session": "s1"})
+        await session.call_tool(
+            "web_browser_actions", {"url": "https://x", "actions": [{"type": "wait", "wait": 1}], "session": "s1"}
+        )
+        await session.call_tool("web_screenshot", {"url": "https://x", "session": "s1"})
+        assert provider.calls["fetch"]["session"] == "s1"
+        assert provider.calls["browser_actions"]["session"] == "s1"
+        assert provider.calls["screenshot"]["session"] == "s1"
+
+
+async def test_web_session_in_schemas():
+    async with client_for(Router([RecordingProvider()])) as session:
+        tools = await session.list_tools()
+        schemas = {t.name: t.input_schema for t in tools.tools}
+        assert schemas["web_session"]["properties"]["op"]["enum"] == ["create", "destroy"]
+        assert "session" in schemas["web_session"]["required"]
+        for tool in ("web_fetch", "web_browser_actions", "web_screenshot"):
+            assert "session" in schemas[tool]["properties"]
