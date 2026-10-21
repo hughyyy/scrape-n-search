@@ -188,6 +188,7 @@ regardless of how it is launched. Existing environment variables take precedence
 | `ENABLED_TOOLS` | Explicit comma-separated allow-list (`web_search,web_fetch,web_browser_actions,web_screenshot,web_crawl,web_extract`). Overrides the set derived from `DEFAULT_PROVIDER`. |
 | `PROVIDER_PRIORITY` | Selection order for auto-picked providers (default: recommended stack order). |
 | `HTTP_TIMEOUT` | HTTP timeout in seconds for provider API calls (default 60, connect 15). Scrappey browser requests take 20–40s — set 120 for long `web_browser_actions` sequences. |
+| `CACHE_TTL` | TTL in seconds for cached `web_fetch` results (default 0 = off). Identical repeated fetches (same url/params/provider) are served from the router cache, so agents re-reading a page pay once. |
 | `JINA_KEYLESS` | Set `0` to disable the keyless Jina fallback. |
 
 Example — Scrappey as the only/default provider (fetch + browser actions + screenshots):

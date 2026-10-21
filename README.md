@@ -132,6 +132,7 @@ existing environment variables take precedence.
 | `ENABLED_TOOLS` | Explicit tool allow-list, e.g. `web_fetch,web_browser_actions,web_screenshot`. Overrides the set derived from `DEFAULT_PROVIDER`. |
 | `PROVIDER_PRIORITY` | Selection order for auto-picked providers (default: recommended stack order). |
 | `HTTP_TIMEOUT` | HTTP timeout in seconds for provider API calls (default 60, connect 15). Raise for long Scrappey browser sequences. |
+| `CACHE_TTL` | TTL in seconds for cached `web_fetch` results (default 0 = off). Repeated identical fetches are served from the router cache instead of billing the provider. |
 
 ## How it works
 

@@ -53,6 +53,23 @@ async def test_build_router_shares_configured_client(monkeypatch):
         await router.aclose()
 
 
+async def test_build_router_reads_cache_ttl(monkeypatch):
+    monkeypatch.setenv("CACHE_TTL", "300")
+    monkeypatch.delenv("PROVIDER_PRIORITY", raising=False)
+    router = build_router_from_env()
+    try:
+        assert router._cache_ttl == 300.0
+    finally:
+        await router.aclose()
+
+
+async def test_build_router_rejects_bad_cache_ttl(monkeypatch):
+    for bad in ("-5", "abc"):
+        monkeypatch.setenv("CACHE_TTL", bad)
+        with pytest.raises(ValueError):
+            build_router_from_env()
+
+
 async def test_build_providers_without_client_uses_default_timeout():
     providers = build_providers()
     for p in providers:
