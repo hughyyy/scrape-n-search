@@ -48,11 +48,11 @@ a specific provider; otherwise the default or auto-selected provider is used.
 
 | Tool | Description |
 | --- | --- |
-| `web_search` | `query` (required), `max_results` (5), `freshness`, `country` → `{query, provider, results:[{title, url, snippet, published_date?, score?}]}` |
-| `web_fetch` | `url` (required), `format` (`markdown` \| `html`), `js_render`, `premium_proxy`, `proxy_country` → `{provider, url, title?, format, content}` |
+| `web_search` | `query` (required), `max_results` (5, 1–50), `freshness`, `country` → `{query, provider, results:[{title, url, snippet, published_date?, score?}]}` |
+| `web_fetch` | `url` (required), `format` (`markdown` \| `html`, enum), `js_render`, `premium_proxy`, `proxy_country` → `{provider, url, title?, format, content}` |
 | `web_browser_actions` | `url` + `actions[]` (required), `format`, `proxy_country` → `{provider, url, format, content, javascript_return[]}` |
 | `web_screenshot` | `url` (required), `full_page`, `selector`, `proxy_country` → `{provider, url, format: "png", screenshot_base64}` |
-| `web_crawl` | `url` (required), `max_pages` (10), `max_depth` (2) → `{provider, pages:[{url, title?, content?}]}` |
+| `web_crawl` | `url` (required), `max_pages` (10, 1–100), `max_depth` (2, 1–10) → `{provider, pages:[{url, title?, content?}]}` |
 | `web_extract` | `url` (required), `prompt` → `{provider, url, data}` |
 
 Every response names the provider that actually served the request. When

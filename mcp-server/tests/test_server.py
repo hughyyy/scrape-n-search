@@ -252,3 +252,41 @@ async def test_proxy_country_in_tool_schemas():
         schemas = {t.name: t.input_schema for t in tools.tools}
         for tool in ("web_fetch", "web_browser_actions", "web_screenshot"):
             assert "proxy_country" in schemas[tool]["properties"]
+
+
+async def test_format_is_enum_in_schemas():
+    async with client_for(Router([RecordingProvider()])) as session:
+        tools = await session.list_tools()
+        schemas = {t.name: t.input_schema for t in tools.tools}
+        for tool in ("web_fetch", "web_browser_actions"):
+            assert schemas[tool]["properties"]["format"]["enum"] == ["markdown", "html"]
+            assert schemas[tool]["properties"]["format"]["default"] == "markdown"
+
+
+async def test_invalid_format_rejected():
+    async with client_for(Router([RecordingProvider()])) as session:
+        res = await session.call_tool("web_fetch", {"url": "https://x", "format": "pdf"})
+        assert "Input should be 'markdown' or 'html'" in res.content[0].text
+
+
+async def test_max_results_bounds_rejected():
+    async with client_for(Router([FakeProvider()])) as session:
+        for bad in (0, 51):
+            res = await session.call_tool("web_search", {"query": "q", "max_results": bad})
+            payload = json.loads(res.content[0].text)
+            assert "max_results must be between 1 and 50" in payload["error"]
+
+
+async def test_crawl_bounds_rejected():
+    async with client_for(Router([FakeProvider()])) as session:
+        res = await session.call_tool("web_crawl", {"url": "https://x", "max_pages": 101})
+        assert "max_pages must be between 1 and 100" in json.loads(res.content[0].text)["error"]
+        res = await session.call_tool("web_crawl", {"url": "https://x", "max_depth": 0})
+        assert "max_depth must be between 1 and 10" in json.loads(res.content[0].text)["error"]
+
+
+async def test_empty_actions_rejected():
+    async with client_for(Router([RecordingProvider()])) as session:
+        res = await session.call_tool("web_browser_actions", {"url": "https://x", "actions": []})
+        payload = json.loads(res.content[0].text)
+        assert "non-empty list" in payload["error"]

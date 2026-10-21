@@ -52,7 +52,7 @@ Search the web and return ranked results.
 | Param | Type | Default | Notes |
 |---|---|---|---|
 | `query` | string | — | required |
-| `max_results` | int | 5 | |
+| `max_results` | int | 5 | 1–50 |
 | `provider` | string? | null | force a provider |
 | `freshness` | string? | null | `hour` \| `day` \| `week` \| `month` \| `year` (mapped per provider) |
 | `country` | string? | null | geo-boost (Tavily, Firecrawl, Serper) |
@@ -66,7 +66,7 @@ Fetch a URL to clean content, server-side.
 | Param | Type | Default | Notes |
 |---|---|---|---|
 | `url` | string | — | required |
-| `format` | string | `markdown` | `markdown` \| `html` |
+| `format` | string | `markdown` | `markdown` \| `html` (enum) |
 | `provider` | string? | null | force a provider |
 | `js_render` | bool | false | render JS (Scrappey browser mode; ZenRows `js_render`) |
 | `premium_proxy` | bool | false | residential proxy routing (Scrappey: always on; ZenRows `premium_proxy`) |
@@ -114,8 +114,8 @@ Recursively crawl a domain. Served by Firecrawl only.
 | Param | Type | Default |
 |---|---|---|
 | `url` | string | — |
-| `max_pages` | int | 10 |
-| `max_depth` | int | 2 |
+| `max_pages` | int | 10 | 1–100 |
+| `max_depth` | int | 2 | 1–10 |
 | `provider` | string? | null |
 
 Response: `{provider, pages: [{url, title?, content?}]}`

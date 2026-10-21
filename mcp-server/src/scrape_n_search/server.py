@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Literal
 
 from mcp.server.mcpserver import MCPServer
 
@@ -153,6 +154,8 @@ def build_server(
             freshness: str | None = None,
             country: str | None = None,
         ) -> str:
+            if not 1 <= max_results <= 50:
+                return json.dumps({"error": "max_results must be between 1 and 50"})
             try:
                 name, results = await router.run(
                     "search",
@@ -171,7 +174,7 @@ def build_server(
         @server.tool(name="web_fetch", description=_TOOL_DESCRIPTIONS["web_fetch"])
         async def web_fetch(
             url: str,
-            format: str = "markdown",
+            format: Literal["markdown", "html"] = "markdown",
             provider: str | None = None,
             js_render: bool = False,
             premium_proxy: bool = False,
@@ -197,10 +200,12 @@ def build_server(
         async def web_browser_actions(
             url: str,
             actions: list[dict],
-            format: str = "markdown",
+            format: Literal["markdown", "html"] = "markdown",
             provider: str | None = None,
             proxy_country: str | None = None,
         ) -> str:
+            if not actions:
+                return json.dumps({"error": "actions must be a non-empty list of Scrappey action objects"})
             try:
                 name, result = await router.run(
                     "browser_actions",
@@ -246,6 +251,10 @@ def build_server(
             max_depth: int = 2,
             provider: str | None = None,
         ) -> str:
+            if not 1 <= max_pages <= 100:
+                return json.dumps({"error": "max_pages must be between 1 and 100"})
+            if not 1 <= max_depth <= 10:
+                return json.dumps({"error": "max_depth must be between 1 and 10"})
             try:
                 name, pages = await router.run(
                     "crawl",
