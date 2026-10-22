@@ -48,13 +48,23 @@ a specific provider; otherwise the default or auto-selected provider is used.
 
 | Tool | Description |
 | --- | --- |
-| `web_search` | `query` (required), `max_results` (5, 1–50), `freshness`, `country` → `{query, provider, results:[{title, url, snippet, published_date?, score?}]}` |
+| `web_search` | `query` (required), `max_results` (5, 1–50), `freshness`, `country` → `{query, provider, results:[{title, url, snippet, published_date?, score?}]}` ^1 |
 | `web_fetch` | `url` (required), `format` (`markdown` \| `html`, enum), `js_render`, `premium_proxy`, `proxy_country`, `session` → `{provider, url, title?, format, content}` |
 | `web_browser_actions` | `url` + `actions[]` (required), `format`, `proxy_country`, `session` → `{provider, url, format, content, javascript_return[]}` |
 | `web_screenshot` | `url` (required), `full_page`, `selector`, `proxy_country`, `session` → `{provider, url, format: "png", screenshot_base64}` |
 | `web_session` | `op` (`create` \| `destroy`) (required), `session` (required) → `{provider, op, session, solution}` — Scrappey browser-session lifecycle; pass the name to the other tools as `session` |
-| `web_crawl` | `url` (required), `max_pages` (10, 1–100), `max_depth` (2, 1–10) → `{provider, pages:[{url, title?, content?}]}` |
+| `web_crawl` | `url` (required), `max_pages` (10, 1–100), `max_depth` (2, 1–10) → `{provider, pages:[{url, title?, content?}]}` ^1 |
 | `web_extract` | `url` (required), `prompt` → `{provider, url, data}` |
+
+^1 Scrappey has no search/crawl/extract endpoints. When Scrappey is the **only** configured
+provider, the first call to `web_search`/`web_crawl`/`web_extract` returns an explanation
+of the gated emulation and its drawbacks, and executes only after the follow-up flag
+described in that explanation. `web_search` uses one full-browser Bing request
+(€1/1K, ~20–40s — browser mode is required: live testing showed Bing serves stale
+cached result pages to Scrappey's basic-mode proxies); `web_crawl` uses per-page
+basic-mode fetches (€0.10/1K each); `web_extract` uses one Scrappey fetch plus one
+LLM summary call (`OPENROUTER_API_KEY` or `HF_TOKEN`; `js_render=true` for JS-heavy
+pages). Real search/crawl/extract providers are always preferred when configured.
 
 Every response names the provider that actually served the request. When
 `web_browser_actions` runs `execute_js`, use `format="html"` — the markdown filter
@@ -143,10 +153,13 @@ existing environment variables take precedence.
 | `TINYFISH_API_KEY`, `TAVILY_API_KEY`, `EXA_API_KEY`, `ZENROWS_API_KEY`, `SCRAPPEY_API_KEY`, `FIRECRAWL_API_KEY`, `SERPER_API_KEY` | Enable the corresponding providers. |
 | `JINA_API_KEY` | Enables Jina search (fetch is keyless). |
 | `JINA_KEYLESS` | Set `0` to disable the keyless Jina fetch fallback (on by default). |
-| `DEFAULT_PROVIDER` | Provider used when a call omits `provider`. When set, tools that provider cannot serve are hidden from the client. |
+| `DEFAULT_PROVIDER` | Provider used when a call omits `provider`. When set, tools that provider cannot serve are hidden from the client (except `web_search`/`web_crawl`/`web_extract`, which stay visible when an enabled Scrappey can emulate them — gated per call). |
 | `ENABLED_TOOLS` | Explicit tool allow-list, e.g. `web_fetch,web_browser_actions,web_screenshot`. Overrides the set derived from `DEFAULT_PROVIDER`. |
 | `PROVIDER_PRIORITY` | Selection order for auto-picked providers (default: recommended stack order). |
 | `HTTP_TIMEOUT` | HTTP timeout in seconds for provider API calls (default 60, connect 15). Raise for long Scrappey browser sequences. |
+| `OPENROUTER_API_KEY` / `HF_TOKEN` | LLM key for the emulated `web_extract` (fetch + LLM summary). Read from the process env first (a harness can inject them via its mcp.json `env` block) or from `.env`. |
+| `EXTRACT_MODEL` | Model for the emulated extract call (defaults: OpenRouter `deepseek/deepseek-chat`, HuggingFace `deepseek-ai/DeepSeek-V4-Flash-0731`). |
+| `EXTRACT_MAX_CHARS` | Page text cap (chars) sent to the LLM per emulated extract (default 100000). |
 | `CACHE_TTL` | TTL in seconds for cached `web_fetch` results (default 0 = off). Repeated identical fetches are served from the router cache instead of billing the provider. |
 | `LOG_LEVEL` | Log verbosity: `DEBUG`, `INFO` (default), `WARNING`, `ERROR`, `CRITICAL`. INFO logs which provider served each call; DEBUG adds cache hits. |
 

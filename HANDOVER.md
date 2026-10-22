@@ -17,22 +17,52 @@ unified agent tools.
 
 ## Current state (all verified)
 
-- **98 tests pass** (`mcp-server/tests`).
+- **138 tests pass** (`mcp-server/tests`).
 - Registered with Oh My Pi on this machine: `~/.omp/agent/mcp.json` →
   `scrape-n-search` (stdio, `python -m scrape_n_search`, cwd=`mcp-server`, 120s timeout).
 - A real `SCRAPPEY_API_KEY` is set in `mcp-server/.env` (gitignored). `DEFAULT_PROVIDER=scrappey`
   is active → the MCP exposes **`web_fetch`, `web_browser_actions`, `web_screenshot`,
-  `web_session`** (Scrappey capabilities; unsupported tools are auto-hidden). A
+  `web_session`** (Scrappey capabilities) plus **`web_search`, `web_crawl`, `web_extract`
+  as gated emulations** (see below). A
   `scrappey://playbook` resource guides agents on common actions.
+- Harness registration (`~/.omp/agent/mcp.json`) now injects `HF_TOKEN` +
+  `OPENROUTER_API_KEY` into the scrape-n-search server env (same `omp token`
+  mechanism as look-n-see) — the emulated `web_extract` LLM leg bills those
+  accounts, not the Scrappey balance. The MCP stdio SDK allow-lists inherited
+  env (`HOME,LOGNAME,PATH,SHELL,TERM,USER`); any key must be declared in the
+  registration `env` block or `.env`.
 - Git history: `dbf36d7` (research) → `4a4e649` (MCP server) → `3419fc4` (Scrappey) →
   `5204838` (tool hiding + default provider) → `db61c28` (.env loading) → `9b71243`
   (cwd-independent .env + OMP docs) → `a66e638` (handover + docs + Scrappey basic-mode
   fix) → `8fac903` (browser actions + screenshot + playbook) → `02ed4d6` (setup wizard
   + README rewrite) → `aa0aad5` (install.sh + harness registration) →
   `05cbaf3` (proxy_country) → `a19054d` (HTTP_TIMEOUT) → `50b0e03` (arg validation) →
-  `fd72e55` (web_session) → `361961e` (CACHE_TTL) → next (LOG_LEVEL).
+  `fd72e55` (web_session) → `361961e` (CACHE_TTL) → `current` (dual-run emulated
+  search/crawl/extract + harness-key web_extract; commit subject "Dual-run emulated
+  search/crawl/extract via Scrappey + LLM web_extract").
 
 ## Since the previous handover (Oct 2026 session)
+
+- **Emulated `web_search`/`web_crawl`/`web_extract` with a dual-run trigger** —
+  Scrappey has no search/crawl/extract endpoints, so when it is the only configured provider the
+  tools are now served by gated emulation (`emulation.py`):
+  `web_search` loads Bing's results page in **full-browser mode** (€1/1K, ~20–40s)
+  and parses it into unified `SearchResult`s (Bing `/ck/a` click-tracking URLs
+  decoded to their real destinations); `web_crawl` runs a
+  same-host BFS with one basic-mode fetch per page; `web_extract` does one
+  Scrappey fetch (basic mode by default, raw HTML stripped to text locally;
+  `js_render=true` for browser mode + Scrappey markdown) plus one LLM call
+  (`llm.py`: `OPENROUTER_API_KEY` or `HF_TOKEN`, thinking requested off
+  best-effort, `EXTRACT_MODEL`/`EXTRACT_MAX_CHARS` env) that reduces the page
+  to clean Markdown. The first call **returns an
+  explanation** (mechanics + drawbacks) and does **not** execute; only a follow-up
+  call with a `force=true` argument runs it. The flag is deliberately **not in the
+  published schemas** — it is stripped post-registration from `tools/list`
+  (`_hide_force_flags` in server.py) and revealed only by the first-call
+  explanation. Real search/crawl/extract providers are always preferred when configured.
+  Live-verified (2026-10): gate + force through the real Scrappey API and the
+  real harness OpenRouter key (example.com → clean markdown; thinking-off
+  param accepted on first attempt).
 
 - **`proxy_country`** exposed on `web_fetch`/`web_browser_actions`/`web_screenshot` —
   pins the Scrappey residential proxy region (fixes the geo-variance issue).
@@ -65,6 +95,8 @@ Keys/config live in `mcp-server/.env` (auto-loaded; see `.env.example`).
 ## Key files
 
 - `mcp-server/src/scrape_n_search/server.py` — MCP tools + tool hiding/default provider
+- `mcp-server/src/scrape_n_search/emulation.py` — Scrappey-emulated search/crawl/extract (Bing SERP parse, BFS crawl, fetch+LLM extract) + dual-run explanation payloads
+- `mcp-server/src/scrape_n_search/llm.py` — minimal OpenAI-compatible chat client for emulated extract (harness-key resolution, thinking-off best-effort)
 - `mcp-server/src/scrape_n_search/router.py` — selection, priority, failover, TTL cache
 - `mcp-server/src/scrape_n_search/providers/` — 8 provider adapters (`base.py` + one per provider)
 - `mcp-server/src/scrape_n_search/__main__.py` — entrypoint + `.env` loading + logging
@@ -99,6 +131,21 @@ Keys/config live in `mcp-server/.env` (auto-loaded; see `.env.example`).
   direct API — not exposed through the MCP `web_fetch` tool.
 - **Failover works**: when the preferred provider errors, the router silently fails over
   (e.g. Scrappey → Jina). The response names the actual serving provider.
+- **httpx INFO logging leaks the Scrappey API key**: with default `LOG_LEVEL=INFO`,
+  httpx logs every request URL, and the Scrappey key rides in the query string
+  (`POST https://publisher.scrappey.com/api/v1?key=…`) — observed live. Key is
+  gitignored and only in `.env`, but the log line exposes it; consider filtering
+  httpx logs or `LOG_LEVEL=WARNING` on shared machines.
+- **Emulated search (live-verified 2026-10)**: Bing serves every organic result as a
+  `/ck/a` click-tracking redirect — the server decodes the base64 `u=` param to the
+  real destination URL. **Basic mode is unusable for search**: Bing served stale
+  cached result pages for *other* queries to Scrappey's rotating proxies (4/4 probe
+  requests returned coherent but off-query results, identical across repeats), which
+  is why emulated search uses full-browser mode (~30s, €1/1K). Results can include
+  promoted entries and geo varies with the proxy; parsing is best-effort.
+- **Emulated crawl returns raw HTML** per page (basic mode); no JS rendering, and any
+  page error aborts the whole crawl (no partial results — by design, documented in the
+  call-time explanation).
 
 ## Open items / next steps
 
@@ -111,10 +158,12 @@ Keys/config live in `mcp-server/.env` (auto-loaded; see `.env.example`).
   (`curl | bash`) live and pipe-safe (`--ref` pins tags).
 - Cross-request session reuse (cookies/login state) is blocked by Scrappey's current
   request lifecycle — re-test when the vendor changes behavior.
-- Scrappey AI extraction is **not** exposed via the MCP (only fetch, browser actions,
-  screenshots, sessions). Could add `web_extract` for Scrappey via its direct API.
-- `web_crawl`/`web_extract` are only served by Firecrawl (and ZenRows for extract); they
-  return a clean "no configured provider" error when no key is set.
+- Scrappey's own GPT-4 "AI extraction" direct-API feature is still not exposed via
+  the MCP (the emulated `web_extract` is fetch + harness-key LLM summary, not
+  Scrappey's extractor) — could be added via the direct API.
+- `web_crawl` is served by Firecrawl when configured and by the gated Scrappey
+  emulation otherwise; `web_extract` is served by Firecrawl/ZenRows when configured
+  and by the gated fetch+LLM emulation otherwise (needs `OPENROUTER_API_KEY`/`HF_TOKEN`).
 - The `main`-branch OMP JSON schema is stale (rejects even the working `hf-vision` entry);
   runtime validation is permissive — don't "fix" the config to satisfy that schema.
 

@@ -13,6 +13,13 @@ Scrappey. This playbook is exposed as the `scrappey://playbook` MCP resource.
 - `web_session` — create/destroy Scrappey browser sessions; pass the name to the other
   tools via `session=`. Note: Scrappey currently destroys a named session once a
   request completes, so cookies/state do not persist across calls (verified 2026-10).
+- `web_search` / `web_crawl` / `web_extract` — when no real search/crawl/extract
+  provider is configured, the first call returns an explanation of the gated
+  emulation (Bing SERP parse / same-host BFS over basic-mode fetches / fetch +
+  LLM summary) and its drawbacks; re-call with the `force` argument described
+  in that explanation to execute. `web_extract` needs an LLM key
+  (`OPENROUTER_API_KEY` or `HF_TOKEN`) reachable by the server — the LLM call
+  bills the harness LLM account, not the Scrappey balance.
 
 ## General rules
 

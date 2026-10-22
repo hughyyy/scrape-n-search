@@ -18,9 +18,49 @@ provider — the cheapest option in the research and the current default.
 ## Capability in this MCP
 
 `fetch`, `browser_actions`, `screenshot`, and `session` (create/destroy). Scrappey has
-no search/crawl/extract endpoints; with `DEFAULT_PROVIDER=scrappey` the MCP hides
-`web_search`, `web_crawl`, and `web_extract`, exposing `web_fetch`,
-`web_browser_actions`, `web_screenshot`, and `web_session`.
+no search/crawl/extract endpoints. With `DEFAULT_PROVIDER=scrappey` the MCP exposes
+`web_fetch`, `web_browser_actions`, `web_screenshot`, `web_session`, plus
+`web_search`, `web_crawl`, and `web_extract` as **gated emulations** (see below).
+
+### Emulated `web_search` / `web_crawl` / `web_extract` (dual-run trigger)
+
+When Scrappey is the only configured provider, calling an emulated tool without
+the gate flag is **not executed**: the server returns an explanation of how
+the emulation will function and its drawbacks (see `emulation.py` for the exact
+payload). The caller explicitly re-invokes with the documented flag to run:
+
+- `web_search` → one full-browser (`js_render=true`, €1/1K, ~20–40s) fetch of
+  `https://www.bing.com/search?q=…`; the rendered HTML is parsed into the unified
+  `SearchResult` shape (Bing `/ck/a` click-tracking URLs are decoded to their real
+  destination). Browser mode is deliberate: live testing (2026-10) showed Bing serves
+  stale cached result pages for *other* queries to Scrappey's rotating residential
+  proxies in basic mode (4/4 probe requests off-query), while browser mode returns
+  fresh relevant results. No scores/dates; promoted results can appear; markup or
+  anti-bot changes can degrade parsing.
+- `web_crawl` → breadth-first walk of same-host pages, one basic-mode fetch per
+  page (up to `max_pages` billed requests), raw HTML content per page. No JS
+  rendering, no partial results on page errors.
+- `web_extract` → one Scrappey fetch plus one LLM call. Basic mode
+  (`js_render=false`, €0.10/1K) strips the raw HTML to text locally;
+  `js_render=true` uses full browser mode (€1/1K) and passes Scrappey's markdown
+  conversion straight to the LLM (needed for JS-heavy pages). The page text is
+  truncated to `EXTRACT_MAX_CHARS` (default 100k chars) before the call. The
+  completion is returned as clean Markdown in the normal `web_extract` response
+  shape (`{provider, url, format, data}`).
+
+**Emulated `web_extract` needs an LLM key.** The summary call bills the harness LLM
+account, not the Scrappey balance. The server reads `OPENROUTER_API_KEY` or
+`HF_TOKEN` from its environment (a harness can inject them via the mcp.json `env`
+block — same mechanism as look-n-see — or they can live in `.env`) and
+`EXTRACT_MODEL` to pick the model (defaults: OpenRouter `deepseek/deepseek-chat`,
+HuggingFace `deepseek-ai/DeepSeek-V4-Flash-0731`). Thinking is requested off
+(`reasoning: {effort: none}` / `enable_thinking: false`) but that is best-effort —
+some models or endpoints reject or ignore the param, which only raises cost and
+latency, not output quality. The summary is LLM-generated: it can miss details or
+hallucinate facts; it is not a lossless or structured extract.
+
+The flag is deliberately absent from the published tool schemas; it is revealed only
+by each tool's first-call explanation and accepted only on that follow-up call.
 
 ## Tools
 
@@ -30,6 +70,9 @@ no search/crawl/extract endpoints; with `DEFAULT_PROVIDER=scrappey` the MCP hide
 | `web_browser_actions` | browser actions | run a sequence of `browserActions` and return page content + `execute_js` results |
 | `web_screenshot` | screenshot | base64 PNG; `full_page` or `selector` capture |
 | `web_session` | sessions | `op=create` / `op=destroy` lifecycle (`sessions.create` / `sessions.destroy`) |
+| `web_search` | *(emulated)* | gated dual-run: one full-browser Bing SERP fetch, parsed results (see above) |
+| `web_crawl` | *(emulated)* | gated dual-run: BFS over same-host links, one basic-mode fetch per page (see above) |
+| `web_extract` | *(emulated)* | gated dual-run: one Scrappey fetch + one LLM summary (requires OPENROUTER_API_KEY/HF_TOKEN) |
 
 ## Two fetch modes (mapped from `web_fetch` params)
 

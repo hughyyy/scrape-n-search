@@ -38,7 +38,9 @@ Router (router.py) ── picks provider by priority + capability, fails over on
   aggregates errors if all fail. The response always names the provider that served it.
 - **Default provider**: `DEFAULT_PROVIDER` forces a preferred provider for every call
   (the agent can still override per-call with the `provider` parameter). When set, tools
-  that provider cannot serve are **hidden** from the client.
+  that provider cannot serve are **hidden** from the client — except `web_search` and
+  `web_crawl`, which stay visible when an enabled Scrappey can emulate them (each call
+  explains the emulation and requires an explicit follow-up flag before executing).
 
 ## Tools
 
@@ -58,6 +60,13 @@ Search the web and return ranked results.
 | `country` | string? | null | geo-boost (Tavily, Firecrawl, Serper) |
 
 Response: `{query, provider, results: [{title, url, snippet, published_date?, score?}]}`
+
+> **No search provider configured?** When only Scrappey is available, the call is not
+> executed: the server returns an explanation of the emulated path (one full-browser
+> Bing SERP fetch, parsed into the same shape; browser mode is required — live testing
+> showed Bing serves stale cached result pages to Scrappey's basic-mode proxies) with
+> its drawbacks, and a documented follow-up argument that runs it anyway. Real search
+> providers (Tavily, Exa, Serper, TinyFish, Jina) are always preferred when configured.
 
 ### `web_fetch`
 
@@ -132,7 +141,9 @@ Response: `{provider, op, session, solution}`
 
 ### `web_crawl`
 
-Recursively crawl a domain. Served by Firecrawl only.
+Recursively crawl a domain. Served by Firecrawl; with only Scrappey configured, a
+gated emulation (per-page basic-mode fetches, BFS over same-host links) is available
+via the call-time explanation.
 
 | Param | Type | Default |
 |---|---|---|
@@ -145,16 +156,20 @@ Response: `{provider, pages: [{url, title?, content?}]}`
 
 ### `web_extract`
 
-Extract structured JSON from a page. Served by Firecrawl (prompt-based) and ZenRows
-(`extract=auto`).
+Extract structured data from a page. Served by Firecrawl (prompt-based) and ZenRows
+(`extract=auto`). With only Scrappey configured, a gated emulation is available via
+the call-time explanation: one Scrappey fetch plus one LLM call (the harness
+`OPENROUTER_API_KEY`/`HF_TOKEN`, thinking requested off) that reduces the page to
+clean Markdown.
 
 | Param | Type | Default |
 |---|---|---|
 | `url` | string | — |
 | `prompt` | string? | null |
 | `provider` | string? | null |
+| `js_render` | bool | false | emulation only: full browser mode (€1/1K) for JS-heavy pages |
 
-Response: `{provider, url, data}`
+Response: `{provider, url, data}` (`data` is Markdown for the Scrappey emulation)
 
 ## Provider coverage
 
@@ -191,6 +206,9 @@ regardless of how it is launched. Existing environment variables take precedence
 | `HTTP_TIMEOUT` | HTTP timeout in seconds for provider API calls (default 60, connect 15). Scrappey browser requests take 20–40s — set 120 for long `web_browser_actions` sequences. |
 | `CACHE_TTL` | TTL in seconds for cached `web_fetch` results (default 0 = off). Identical repeated fetches (same url/params/provider) are served from the router cache, so agents re-reading a page pay once. |
 | `LOG_LEVEL` | Log verbosity: `DEBUG`, `INFO` (default), `WARNING`, `ERROR`, `CRITICAL`. INFO logs which provider served each tool call and failover attempts; DEBUG adds cache hits. |
+| `OPENROUTER_API_KEY` / `HF_TOKEN` | LLM key for the emulated `web_extract` (fetch + LLM summary). Read from the process env first — a harness can inject it via its mcp.json `env` block — or set here. |
+| `EXTRACT_MODEL` | Model for the emulated extract call (defaults: OpenRouter `deepseek/deepseek-chat`, HuggingFace `deepseek-ai/DeepSeek-V4-Flash-0731`). |
+| `EXTRACT_MAX_CHARS` | Page text cap (chars) sent to the LLM per emulated extract (default 100000). |
 | `JINA_KEYLESS` | Set `0` to disable the keyless Jina fallback. |
 
 Example — Scrappey as the only/default provider (fetch + browser actions + screenshots):
@@ -198,7 +216,7 @@ Example — Scrappey as the only/default provider (fetch + browser actions + scr
 ```bash
 # mcp-server/.env
 SCRAPPEY_API_KEY=your_key_here
-DEFAULT_PROVIDER=scrappey   # hides web_search/web_crawl/web_extract
+DEFAULT_PROVIDER=scrappey   # web_search/web_crawl/web_extract are emulated via Scrappey (gated)
 ```
 
 ## Scrappey
@@ -206,7 +224,11 @@ DEFAULT_PROVIDER=scrappey   # hides web_search/web_crawl/web_extract
 Scrappey is the cheapest scraping option in the research (€0.10/1K direct, €1/1K full
 browser; pay-as-you-go, no subscription, balance never expires, residential proxies
 included, pay-per-success). It provides **fetch, browser actions, screenshots, and
-session management (`web_session`)** in this MCP.
+session management (`web_session`)** in this MCP, plus **gated emulations of
+`web_search`** (one full-browser Bing fetch), **`web_crawl`** (per-page basic-mode
+BFS), and **`web_extract`** (fetch + LLM summary) for setups where Scrappey is the
+only configured provider — the first call explains mechanics and drawbacks, and runs
+only after an explicit follow-up flag.
 
 Full documentation of its two modes, pricing, API, browser actions, and behavior:
 **[`docs/scrappey.md`](docs/scrappey.md)**. A common-actions playbook for agents is
