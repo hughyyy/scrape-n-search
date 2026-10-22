@@ -439,3 +439,304 @@ async def test_unsupported_tool_raises():
     provider = SerperProvider("k", make_client(lambda r: httpx.Response(200, json={})))
     with pytest.raises(ProviderError):
         await provider.fetch("https://t")
+
+
+# --- Scrappey: request-body details and failure paths ----------------------
+
+
+async def test_scrappey_fetch_sends_proxy_country_and_session():
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.read())
+        assert body["proxyCountry"] == "UnitedStates"
+        assert body["session"] == "s1"
+        assert body["requestType"] == "browser"
+        return httpx.Response(200, json={"solution": {"response": "x"}, "data": "success"})
+
+    provider = ScrappeyProvider("k", make_client(handler))
+    await provider.fetch(
+        "https://example.com", js_render=True, format="html", proxy_country="UnitedStates", session="s1"
+    )
+
+
+async def test_scrappey_browser_html_mode_skips_markdown_filter():
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.read())
+        assert body["requestType"] == "browser"
+        assert "markdown" not in body and "filter" not in body
+        return httpx.Response(200, json={"solution": {"response": "<html>x</html>"}, "data": "success"})
+
+    provider = ScrappeyProvider("k", make_client(handler))
+    page = await provider.fetch("https://example.com", js_render=True, format="html")
+    assert page.content == "<html>x</html>"
+    assert page.format == "html"
+
+
+async def test_scrappey_markdown_falls_back_to_inner_text():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200, json={"solution": {"innerText": "# from innerText"}, "data": "success"}
+        )
+
+    provider = ScrappeyProvider("k", make_client(handler))
+    page = await provider.fetch("https://example.com", js_render=True, format="markdown")
+    assert page.content == "# from innerText"
+    assert page.format == "markdown"
+
+
+async def test_scrappey_fetch_empty_solution_no_crash():
+    provider = ScrappeyProvider("k", make_client(lambda r: httpx.Response(200, json={"solution": {}, "data": "success"})))
+    page = await provider.fetch("https://example.com")
+    assert page.content == ""
+    assert page.url == "https://example.com"
+
+
+async def test_scrappey_browser_actions_html_mode_and_failure():
+    from scrape_n_search.errors import ProviderError
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.read())
+        assert "markdown" not in body
+        return httpx.Response(
+            200, json={"solution": {"response": "x", "javascriptReturn": ["r1"]}, "data": "success"}
+        )
+
+    provider = ScrappeyProvider("k", make_client(handler))
+    result = await provider.browser_actions(
+        "https://example.com", actions=[{"type": "wait", "wait": 1}], format="html"
+    )
+    assert result.format == "html"
+    assert result.javascript_return == ["r1"]
+
+    bad = ScrappeyProvider("k", make_client(lambda r: httpx.Response(200, json={"data": "error"})))
+    with pytest.raises(ProviderError, match="browser_actions failed"):
+        await bad.browser_actions("https://example.com", actions=[{"type": "wait", "wait": 1}])
+
+
+async def test_scrappey_screenshot_selector_vs_fullpage():
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.read())
+        assert body.get("screenshot_selector") == "#price"
+        assert "screenshot_fullpage" not in body
+        return httpx.Response(200, json={"solution": {"screenshot": "img"}, "data": "success"})
+
+    provider = ScrappeyProvider("k", make_client(handler))
+    assert await provider.screenshot("https://example.com", selector="#price") == "img"
+
+
+async def test_scrappey_screenshot_failures():
+    from scrape_n_search.errors import ProviderError
+
+    no_img = ScrappeyProvider("k", make_client(lambda r: httpx.Response(200, json={"solution": {}, "data": "success"})))
+    with pytest.raises(ProviderError, match="no screenshot"):
+        await no_img.screenshot("https://example.com")
+
+    failed = ScrappeyProvider("k", make_client(lambda r: httpx.Response(200, json={"data": "error"})))
+    with pytest.raises(ProviderError, match="screenshot failed"):
+        await failed.screenshot("https://example.com")
+
+
+# --- Firecrawl: params, crawl states, extract ------------------------------
+
+
+async def test_firecrawl_search_sends_freshness_country_location():
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.read())
+        assert body["tbs"] == "qdr:w"
+        assert body["country"] == "us"
+        assert body["location"] == "New York"
+        return httpx.Response(200, json={"data": {"web": [{"title": "T", "url": "https://t", "description": "d"}]}})
+
+    provider = FirecrawlProvider("k", make_client(handler))
+    results = await provider.search("q", freshness="week", country="us", location="New York")
+    assert results[0].title == "T"
+
+
+async def test_firecrawl_search_ignores_unknown_freshness():
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.read())
+        assert "tbs" not in body
+        return httpx.Response(200, json={"data": {"web": []}})
+
+    provider = FirecrawlProvider("k", make_client(handler))
+    assert await provider.search("q", freshness="decade") == []
+
+
+async def test_firecrawl_fetch_html_format():
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.read())
+        assert body["formats"] == [{"type": "html"}]
+        return httpx.Response(200, json={"data": {"url": "https://t", "html": "<p>hi</p>"}})
+
+    provider = FirecrawlProvider("k", make_client(handler))
+    page = await provider.fetch("https://t", format="html")
+    assert page.content == "<p>hi</p>"
+    assert page.format == "html"
+
+
+async def test_firecrawl_fetch_empty_data_no_crash():
+    provider = FirecrawlProvider("k", make_client(lambda r: httpx.Response(200, json={})))
+    page = await provider.fetch("https://t")
+    assert page.content == ""
+    assert page.url == "https://t"
+
+
+async def test_firecrawl_crawl_no_job_id_raises():
+    from scrape_n_search.errors import ProviderError
+
+    provider = FirecrawlProvider("k", make_client(lambda r: httpx.Response(200, json={"success": True})))
+    with pytest.raises(ProviderError, match="no job id"):
+        await provider.crawl("https://t", poll_interval=0.01)
+
+
+async def test_firecrawl_crawl_failed_state_raises():
+    from scrape_n_search.errors import ProviderError
+
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST":
+            return httpx.Response(200, json={"success": True, "id": "job1"})
+        calls["n"] += 1
+        return httpx.Response(200, json={"status": "failed", "error": "blocked"})
+
+    provider = FirecrawlProvider("k", make_client(handler))
+    with pytest.raises(ProviderError, match="crawl failed"):
+        await provider.crawl("https://t", poll_interval=0.01, timeout=1)
+    assert calls["n"] == 1
+
+
+async def test_firecrawl_crawl_cancelled_state_raises():
+    from scrape_n_search.errors import ProviderError
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST":
+            return httpx.Response(200, json={"success": True, "id": "job1"})
+        return httpx.Response(200, json={"status": "cancelled"})
+
+    provider = FirecrawlProvider("k", make_client(handler))
+    with pytest.raises(ProviderError, match="cancelled"):
+        await provider.crawl("https://t", poll_interval=0.01, timeout=1)
+
+
+async def test_firecrawl_crawl_times_out():
+    from scrape_n_search.errors import ProviderError
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST":
+            return httpx.Response(200, json={"success": True, "id": "job1"})
+        return httpx.Response(200, json={"status": "processing"})
+
+    provider = FirecrawlProvider("k", make_client(handler))
+    with pytest.raises(ProviderError, match="timed out"):
+        await provider.crawl("https://t", poll_interval=0.01, timeout=0.02)
+
+
+async def test_firecrawl_extract_sends_prompt_only_when_given():
+    seen = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(json.loads(request.read()))
+        return httpx.Response(200, json={"data": {"title": "T"}})
+
+    provider = FirecrawlProvider("k", make_client(handler))
+    assert await provider.extract("https://t", prompt="price") == {"title": "T"}
+    assert await provider.extract("https://t") == {"title": "T"}
+    assert seen[0] == {"urls": ["https://t"], "prompt": "price"}
+    assert seen[1] == {"urls": ["https://t"]}
+
+
+# --- Jina: key requirements, fetch errors, parse edges ---------------------
+
+
+async def test_jina_search_requires_key():
+    from scrape_n_search.errors import ProviderError
+
+    provider = JinaProvider(client=make_client(lambda r: httpx.Response(200, json={})))
+    with pytest.raises(ProviderError, match="JINA_API_KEY"):
+        await provider.search("q")
+
+
+async def test_jina_search_with_key_sends_auth_and_parses():
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.headers["authorization"] == "Bearer k"
+        assert request.url.params["q"] == "pizza"
+        return httpx.Response(
+            200,
+            text=(
+                "Title: A\nURL: https://a\nDescription: first\n\n"
+                "Title: B\nURL: https://b\nDescription: second\n\n"
+            ),
+        )
+
+    provider = JinaProvider("k", make_client(handler))
+    results = await provider.search("pizza")
+    assert [r.title for r in results] == ["A", "B"]
+    assert results[1].snippet == "second"
+
+
+async def test_jina_fetch_http_error_raises():
+    import httpx as _httpx
+
+    provider = JinaProvider(client=make_client(lambda r: _httpx.Response(500, text="boom")))
+    with pytest.raises(_httpx.HTTPStatusError):
+        await provider.fetch("https://example.com")
+
+
+async def test_jina_parse_skips_fieldless_blocks_and_caps():
+    sample = (
+        "Title: A\nURL: https://a\n\n"          # no description
+        "no fields here\n\n"                    # skipped entirely
+        "Title: B\nURL: https://b\n\n"
+        "Title: C\nURL: https://c\n\n"
+    )
+    results = _parse_search_markdown(sample, 2)
+    assert len(results) == 2
+    assert results[0].title == "A" and results[0].snippet == ""
+    assert results[1].title == "B"
+
+
+async def test_jina_parse_uses_url_as_title_fallback():
+    results = _parse_search_markdown("URL: https://only.com\nDescription: d", 5)
+    assert len(results) == 1
+    assert results[0].title == "https://only.com"
+    assert results[0].url == "https://only.com"
+
+
+# --- ZenRows fetch params ---------------------------------------------------
+
+
+async def test_zenrows_fetch_passes_js_render_premium_proxy_mode():
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.params["js_render"] == "true"
+        assert request.url.params["premium_proxy"] == "true"
+        assert request.url.params["mode"] == "render"
+        assert "response_type" not in request.url.params  # html default
+        return httpx.Response(200, text="# html")
+
+    provider = ZenRowsProvider("k", make_client(handler))
+    page = await provider.fetch("https://example.com", format="html", js_render=True, premium_proxy=True, mode="render")
+    assert page.content == "# html"
+    assert page.format == "html"
+
+
+async def test_zenrows_fetch_text_mode_sets_plaintext():
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.params["response_type"] == "plaintext"
+        return httpx.Response(200, text="plain")
+
+    provider = ZenRowsProvider("k", make_client(handler))
+    page = await provider.fetch("https://example.com", format="text")
+    assert page.format == "text"
+
+
+# --- Tavily extract failure -------------------------------------------------
+
+
+async def test_tavily_extract_failure_raises():
+    from scrape_n_search.errors import ProviderError
+
+    provider = TavilyProvider("k", make_client(lambda r: httpx.Response(
+        200, json={"results": [], "failed_results": [{"url": "https://x", "error": "blocked"}]}
+    )))
+    with pytest.raises(ProviderError, match="blocked"):
+        await provider.fetch("https://x")

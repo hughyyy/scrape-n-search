@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 
+import httpx
 import pytest
 
 from scrape_n_search.errors import NoProviderAvailable, ProviderError
@@ -66,6 +67,100 @@ async def test_preferred_unknown_provider():
     router = make_router(FakeProvider("a", {"search"}))
     with pytest.raises(NoProviderAvailable):
         await router.run("search", preferred="nope", query="q")
+
+
+async def test_preferred_disabled_provider():
+    router = make_router(FakeProvider("a", {"search"}, enabled=False))
+    with pytest.raises(NoProviderAvailable, match="not configured"):
+        await router.run("search", preferred="a", query="q")
+
+
+async def test_priority_ignores_unknown_names():
+    router = make_router(FakeProvider("a", {"search"}), FakeProvider("b", {"search"}), priority=["zz", "a"])
+    name, _ = await router.run("search", query="q")
+    assert name == "a"  # "zz" dropped; a promoted; b appended after
+
+
+async def test_failover_on_httpx_error():
+    class NetProvider(FakeProvider):
+        async def search(self, query: str, **kw):
+            if self._fail:
+                raise httpx.ConnectError("refused", request=None)
+            return [SearchResult(title="ok", url="https://x")]
+
+    router = make_router(
+        NetProvider("a", {"search"}, fail=True),
+        NetProvider("b", {"search"}),
+    )
+    name, results = await router.run("search", query="q")
+    assert name == "b"
+    assert results[0].title == "ok"
+
+
+async def test_uncaught_exception_propagates_without_failover():
+    class BoomProvider(FakeProvider):
+        async def search(self, query: str, **kw):
+            raise RuntimeError("boom")
+
+    router = make_router(BoomProvider("a", {"search"}), FakeProvider("b", {"search"}))
+    with pytest.raises(RuntimeError):
+        await router.run("search", query="q")
+
+
+async def test_no_provider_error_lists_enabled():
+    router = make_router(FakeProvider("a", {"search"}, enabled=False))
+    with pytest.raises(NoProviderAvailable, match="enabled"):
+        await router.run("search", query="q")
+
+
+async def test_cache_evicts_oldest_at_cap():
+    provider = CountingProvider()
+    router = Router([provider], cache_ttl=60)
+    for i in range(513):
+        await router.run("fetch", url=f"https://x/{i}")
+    assert provider.calls == 513
+    # cap enforced: only 512 entries kept
+    assert len(router._cache["fetch"]) == 512
+    # the first (oldest) entry was evicted -> re-fetch
+    await router.run("fetch", url="https://x/0")
+    assert provider.calls == 514
+    # the newest entry is still cached
+    await router.run("fetch", url="https://x/512")
+    assert provider.calls == 514
+
+
+async def test_cache_put_drops_expired_entries_first():
+    provider = CountingProvider()
+    router = Router([provider], cache_ttl=60)
+    # plant 511 live entries + 1 already-expired entry (= cap), so inserting
+    # one more must evict the expired entry rather than a live one
+    live = {f"live-{i}": (10**9, "p", "r") for i in range(511)}
+    router._cache["fetch"] = dict(live)
+    router._cache["fetch"]["expired"] = (0.0, "p", "r")  # expires in the past
+    await router.run("fetch", url="https://x/new")
+    assert "expired" not in router._cache["fetch"]
+    assert sum(k.startswith("live-") for k in router._cache["fetch"]) == 511
+    assert len(router._cache["fetch"]) == 512
+
+
+async def test_cache_hit_returns_provider_name_and_result():
+    provider = CountingProvider()
+    router = Router([provider], cache_ttl=60)
+    name1, r1 = await router.run("fetch", url="https://x")
+    name2, r2 = await router.run("fetch", url="https://x")
+    assert (name1, r1.content) == (name2, r2.content) == ("p", "content #1")
+
+
+async def test_cache_evicts_expired_on_get():
+    provider = CountingProvider()
+    router = Router([provider], cache_ttl=60)
+    await router.run("fetch", url="https://x")
+    # expire the stored entry directly
+    key = router._cache_key("fetch", None, {"url": "https://x"})
+    router._cache["fetch"][key] = (0.0, "p", "unused")
+    hit = router._cache_get("fetch", key)
+    assert hit is None
+    assert key not in router._cache["fetch"]
 
 
 async def test_preferred_unsupported_tool():

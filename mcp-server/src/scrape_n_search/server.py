@@ -172,8 +172,22 @@ def build_server(
     async def _playbook_resource() -> str:
         return _load_playbook()
 
-    def _preferred(provider: str | None) -> str | None:
-        return provider or default_provider
+    def _preferred(provider: str | None, capability: str) -> str | None:
+        """Resolve the effective preferred provider for a capability.
+
+        An explicit ``provider`` argument pins that provider. The default
+        provider is pinned only when it can actually serve the capability;
+        otherwise the router auto-selects — so a configured real provider
+        (e.g. Firecrawl for search) wins over Scrappey emulation, and the
+        emulation gate only fires when nothing can serve the capability.
+        """
+        if provider:
+            return provider
+        if default_provider:
+            prov = router.get(default_provider)
+            if prov is not None and capability in prov.capabilities:
+                return default_provider
+        return None
 
     async def _dual_run(
         router: Router,
@@ -231,7 +245,7 @@ def build_server(
             try:
                 name, results = await router.run(
                     "search",
-                    preferred=_preferred(provider),
+                    preferred=_preferred(provider, "search"),
                     query=query,
                     max_results=max_results,
                     freshness=freshness,
@@ -266,7 +280,7 @@ def build_server(
             try:
                 name, page = await router.run(
                     "fetch",
-                    preferred=_preferred(provider),
+                    preferred=_preferred(provider, "fetch"),
                     url=url,
                     format=format,
                     js_render=js_render,
@@ -294,7 +308,7 @@ def build_server(
             try:
                 name, result = await router.run(
                     "browser_actions",
-                    preferred=_preferred(provider),
+                    preferred=_preferred(provider, "browser_actions"),
                     url=url,
                     actions=actions,
                     format=format,
@@ -319,7 +333,7 @@ def build_server(
             try:
                 name, img = await router.run(
                     "screenshot",
-                    preferred=_preferred(provider),
+                    preferred=_preferred(provider, "screenshot"),
                     url=url,
                     full_page=full_page,
                     selector=selector,
@@ -342,7 +356,7 @@ def build_server(
                 return json.dumps({"error": "session name is required"})
             try:
                 name, result = await router.run(
-                    "session", preferred=_preferred(provider), op=op, session=session
+                    "session", preferred=_preferred(provider, "session"), op=op, session=session
                 )
             except NoProviderAvailable as exc:
                 return json.dumps({"error": str(exc)})
@@ -365,7 +379,7 @@ def build_server(
             try:
                 name, pages = await router.run(
                     "crawl",
-                    preferred=_preferred(provider),
+                    preferred=_preferred(provider, "crawl"),
                     url=url,
                     max_pages=max_pages,
                     max_depth=max_depth,
@@ -392,7 +406,7 @@ def build_server(
             force: bool = False,
         ) -> str:
             try:
-                name, data = await router.run("extract", preferred=_preferred(provider), url=url, prompt=prompt)
+                name, data = await router.run("extract", preferred=_preferred(provider, "extract"), url=url, prompt=prompt)
             except NoProviderAvailable as exc:
                 return await _dual_run(
                     router,

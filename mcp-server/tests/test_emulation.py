@@ -15,6 +15,7 @@ from scrape_n_search.emulation import (
     _html_to_text,
     _is_skippable,
     _llm_max_chars,
+    _unredirect,
     crawl_explanation,
     emulated_crawl,
     emulated_extract,
@@ -159,6 +160,107 @@ def test_bing_parser_keeps_plain_urls():
     assert parser.results[0].url == "https://example.com/x"
 
 
+def test_unredirect_passthrough_non_bing():
+    url = "https://example.com/path?u=abc"
+    assert _unredirect(url) == url
+
+
+def test_unredirect_passthrough_bing_without_u_param():
+    url = "https://www.bing.com/ck/a?p=abc&ntb=1"
+    assert _unredirect(url) == url
+
+
+def test_unredirect_passthrough_invalid_base64():
+    url = "https://www.bing.com/ck/a?u=%21%21%21"
+    assert _unredirect(url) == url
+
+
+def test_unredirect_passthrough_non_url_decode():
+    target = "not a url at all"
+    encoded = base64.b64encode(target.encode()).decode()
+    url = f"https://www.bing.com/ck/a?u={encoded}"
+    assert _unredirect(url) == url
+
+
+def test_unredirect_plain_base64_without_obfuscation():
+    target = "https://example.com/a?b=1"
+    encoded = base64.b64encode(target.encode()).decode().rstrip("=")
+    url = f"https://www.bing.com/ck/a?u={encoded}"
+    assert _unredirect(url) == target
+
+
+def test_unredirect_padding_restored():
+    # url-safe base64 that needs padding re-added before decoding
+    target = "https://example.com/zz"
+    encoded = base64.urlsafe_b64encode(target.encode()).decode().rstrip("=")
+    assert "=" not in encoded
+    url = f"https://www.bing.com/ck/a?u={encoded}"
+    assert _unredirect(url) == target
+
+
+def test_bing_parser_skips_results_without_href():
+    html = (
+        '<ol id="b_results"><li class="b_algo">'
+        "<h2><a>No href</a></h2><p>snippet</p></li></ol>"
+    )
+    parser = _BingSERPParser()
+    parser.feed(html)
+    assert parser.results == []
+
+
+def test_bing_parser_skips_empty_titles():
+    html = (
+        '<ol id="b_results"><li class="b_algo">'
+        '<h2><a href="https://example.com/">   </a></h2><p>snippet</p></li></ol>'
+    )
+    parser = _BingSERPParser()
+    parser.feed(html)
+    assert parser.results == []
+
+
+def test_bing_parser_nested_li_no_crash():
+    html = (
+        '<ol id="b_results"><li class="b_algo">'
+        '<h2><a href="https://example.com/a">Outer</a></h2>'
+        "<li class='b_algo'><h2><a href='https://example.com/b'>Inner</a></h2><p>i</p></li>"
+        "<p>snippet</p></li></ol>"
+    )
+    parser = _BingSERPParser()
+    parser.feed(html)
+    # best-effort: nested/malformed markup must never raise
+    assert isinstance(parser.results, list)
+
+
+def test_bing_parser_takes_first_snippet_only():
+    html = (
+        '<ol id="b_results"><li class="b_algo">'
+        '<h2><a href="https://example.com/a">A</a></h2>'
+        '<p class="b_lineclamp2">first</p><p>second</p>'
+        "</li></ol>"
+    )
+    parser = _BingSERPParser()
+    parser.feed(html)
+    assert parser.results[0].snippet == "first"
+
+
+def test_bing_parser_handles_missing_class_attr():
+    # a <p> without a class attribute is still the snippet container
+    html = (
+        '<ol id="b_results"><li class="b_algo">'
+        '<h2><a href="https://example.com/a">A</a></h2><p>snippet</p></li></ol>'
+    )
+    parser = _BingSERPParser()
+    parser.feed(html)
+    assert parser.results[0].snippet == "snippet"
+
+
+async def test_emulated_search_survives_non_string_content():
+    # a non-string page is a parse failure, not a crash: [] returned
+    provider = StubProvider({"https://www.bing.com/search?q=x": 123})
+    results = await emulated_search(provider, "x", 5)
+    assert results == []
+
+
 def test_title_extraction():
     html = "<html><head><title>  Home &amp; more  </title></head><body></body></html>"
     assert _extract_title(html) == "Home & more"
@@ -261,6 +363,86 @@ async def test_emulated_crawl_propagates_fetch_errors():
     provider = StubProvider({})  # start URL missing -> KeyError inside fetch
     with pytest.raises(KeyError):
         await emulated_crawl(provider, "https://example.com/", max_pages=5, max_depth=2)
+
+
+async def test_emulated_crawl_cycle_does_not_revisit():
+    # /about links back to / — the seen-set must prevent a second fetch
+    provider = StubProvider(
+        {
+            "https://example.com/": (
+                '<html><head><title>Home</title></head><body>'
+                '<a href="/about">About</a></body></html>'
+            ),
+            "https://example.com/about": (
+                '<html><head><title>About</title></head><body>'
+                '<a href="/">Home</a></body></html>'
+            ),
+        }
+    )
+    pages = await emulated_crawl(provider, "https://example.com/", max_pages=10, max_depth=2)
+    assert [p.url for p in pages] == ["https://example.com/", "https://example.com/about"]
+    assert len(provider.calls) == 2
+
+
+async def test_emulated_crawl_dedupes_relative_and_absolute_www_links():
+    # the relative link resolves to the www netloc; the absolute link has the
+    # same dedupe key (www stripped) and must be fetched once
+    provider = StubProvider(
+        {
+            "https://www.example.com/": (
+                '<html><head><title>Home</title></head><body>'
+                '<a href="/about">rel</a>'
+                '<a href="https://www.example.com/about">abs</a>'
+                "</body></html>"
+            ),
+            "https://www.example.com/about": (
+                "<html><head><title>About</title></head><body></body></html>"
+            ),
+        }
+    )
+    pages = await emulated_crawl(provider, "https://www.example.com/", max_pages=10, max_depth=2)
+    assert [p.url for p in pages] == ["https://www.example.com/", "https://www.example.com/about"]
+    assert len(provider.calls) == 2
+
+
+async def test_emulated_crawl_follows_scheme_switch_same_host():
+    # _same_host compares netlocs only, so http->https (same host) is followed
+    provider = StubProvider(
+        {
+            "http://example.com/": (
+                '<html><head><title>Home</title></head><body>'
+                '<a href="https://example.com/secure">Secure</a></body></html>'
+            ),
+            "https://example.com/secure": (
+                "<html><head><title>Secure</title></head><body></body></html>"
+            ),
+        }
+    )
+    pages = await emulated_crawl(provider, "http://example.com/", max_pages=10, max_depth=2)
+    assert [p.url for p in pages] == ["http://example.com/", "https://example.com/secure"]
+
+
+async def test_emulated_crawl_max_pages_one_fetches_only_start():
+    provider = StubProvider(_crawl_pages())
+    pages = await emulated_crawl(provider, "https://example.com/", max_pages=1, max_depth=2)
+    assert [p.url for p in pages] == ["https://example.com/"]
+    assert len(provider.calls) == 1
+
+
+async def test_emulated_crawl_start_url_with_fragment_dedupes_links():
+    provider = StubProvider(
+        {
+            "https://example.com/?q=1#frag": (
+                '<html><head><title>T</title></head><body>'
+                '<a href="?q=1#frag">self with fragment</a>'
+                '<a href="/?q=1">self no fragment</a>'
+                "</body></html>"
+            ),
+        }
+    )
+    pages = await emulated_crawl(provider, "https://example.com/?q=1#frag", max_pages=10, max_depth=2)
+    assert [p.url for p in pages] == ["https://example.com/?q=1#frag"]
+    assert len(provider.calls) == 1
 
 
 def test_search_explanation_shape():
@@ -394,14 +576,40 @@ def test_html_to_text_strips_chrome_and_tags():
     assert "Bold text & more" == text
 
 
+def test_html_to_text_handles_entities_and_collapses_whitespace():
+    html = "<p>a &lt; b &gt; c &quot;d&quot; &amp; &#39;e&#39;</p>"
+    assert _html_to_text(html) == "a < b > c \"d\" & 'e'"
+    assert _html_to_text("<div>  many   \n\n spaces\t here </div>") == "many spaces here"
+
+
+def test_html_to_text_survives_malformed_blocks():
+    # unclosed <script> is not stripped (the regex needs the close tag) but
+    # the output must still be clean text, not markup
+    text = _html_to_text("<p>before</p><script>var x = 1;<p>after</p>")
+    assert "before" in text and "after" in text
+    assert "<" not in text
+
+
+def test_html_to_text_empty_and_whitespace_only():
+    assert _html_to_text("") == ""
+    assert _html_to_text("   \n\t  ") == ""
+
+
 def test_llm_max_chars_default_and_env(monkeypatch):
     assert _llm_max_chars() == 100_000
     with monkeypatch.context() as m:
         m.setenv("EXTRACT_MAX_CHARS", "5000")
         assert _llm_max_chars() == 5000
     with monkeypatch.context() as m:
+        m.setenv("EXTRACT_MAX_CHARS", " 7000 ")
+        assert _llm_max_chars() == 7000
+    with monkeypatch.context() as m:
         m.setenv("EXTRACT_MAX_CHARS", "bogus")
         assert _llm_max_chars() == 100_000
+    for bad in ("0", "-10", "0.5"):
+        with monkeypatch.context() as m:
+            m.setenv("EXTRACT_MAX_CHARS", bad)
+            assert _llm_max_chars() == 100_000
 
 
 def test_extract_explanation_shape():

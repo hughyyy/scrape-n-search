@@ -9,7 +9,7 @@ import pytest
 from mcp.client.client import InMemoryTransport
 from mcp.client.session import ClientSession
 
-from scrape_n_search.models import BrowserActionsResult, FetchedPage, SearchResult
+from scrape_n_search.models import BrowserActionsResult, CrawlPage, FetchedPage, SearchResult
 from scrape_n_search.providers.base import BaseProvider
 from scrape_n_search.router import Router
 from scrape_n_search.server import build_server
@@ -542,3 +542,118 @@ async def test_force_flag_absent_from_all_tool_schemas():
         schemas = {t.name: t.input_schema for t in tools.tools}
     for schema in schemas.values():
         assert "force" not in schema["properties"]
+
+
+async def test_emulated_gate_needs_enabled_scrappey():
+    # Scrappey present but disabled -> the original router error, not a gate
+    provider = FetchOnlyProvider(enabled=False)
+    async with client_for(Router([provider])) as session:
+        res = await session.call_tool("web_search", {"query": "x"})
+    payload = json.loads(res.content[0].text)
+    assert "error" in payload and "emulation" not in payload
+    # and the tool is not even listed under default_provider=scrappey
+    with pytest.raises(ValueError):
+        build_server(Router([provider]), default_provider="scrappey")
+
+
+async def test_unknown_provider_param_returns_error_json():
+    async with client_for(Router([FakeProvider()])) as session:
+        res = await session.call_tool("web_fetch", {"url": "https://x", "provider": "bogus"})
+    payload = json.loads(res.content[0].text)
+    assert "unknown provider 'bogus'" in payload["error"]
+
+
+class FailingGateProvider(GateProvider):
+    async def fetch(self, url: str, **kw) -> FetchedPage:
+        self.fetch_calls.append((url, dict(kw)))
+        raise ProviderError("page fetch exploded")
+
+
+async def test_emulated_search_force_wraps_provider_error(monkeypatch):
+    provider = FailingGateProvider()
+    async with client_for(Router([provider]), default_provider="scrappey") as session:
+        res = await session.call_tool("web_search", {"query": "x", "force": True})
+    payload = json.loads(res.content[0].text)
+    assert "emulated search via scrappey failed" in payload["error"]
+    assert "page fetch exploded" in payload["error"]
+    assert len(provider.fetch_calls) == 1
+
+
+async def test_emulated_crawl_force_wraps_provider_error():
+    provider = FailingGateProvider()
+    async with client_for(Router([provider]), default_provider="scrappey") as session:
+        res = await session.call_tool("web_crawl", {"url": "https://example.com", "force": True})
+    payload = json.loads(res.content[0].text)
+    assert "emulated crawl via scrappey failed" in payload["error"]
+
+
+async def test_web_extract_real_provider_wins_before_emulation():
+    class ExtractProvider(BaseProvider):
+        name = "ex"
+        capabilities = frozenset({"extract"})
+
+        async def extract(self, url: str, *, prompt: str | None = None, **kw):
+            return {"title": "Extracted"}
+
+    router = Router([ExtractProvider(), GateProvider()])
+    async with client_for(router, default_provider="scrappey") as session:
+        res = await session.call_tool("web_extract", {"url": "https://example.com"})
+    payload = json.loads(res.content[0].text)
+    assert payload["provider"] == "ex"
+    assert payload["data"] == {"title": "Extracted"}
+
+
+async def test_default_provider_defers_to_real_search_provider():
+    # default_provider=scrappey cannot serve search natively, so a configured
+    # real search provider must win over the emulation gate
+    router = Router([FakeProvider(), GateProvider()])
+    async with client_for(router, default_provider="scrappey") as session:
+        res = await session.call_tool("web_search", {"query": "hello"})
+    payload = json.loads(res.content[0].text)
+    assert payload["provider"] == "fake"
+    assert payload["results"][0]["title"] == "hello"
+    assert "emulation" not in payload
+
+
+async def test_default_provider_defers_to_real_crawl_provider():
+    class CrawlProvider(BaseProvider):
+        name = "cr"
+        capabilities = frozenset({"crawl"})
+
+        async def crawl(self, url: str, **kw):
+            return [CrawlPage(url=url, title="T", content="# c")]
+
+    router = Router([CrawlProvider(), GateProvider()])
+    async with client_for(router, default_provider="scrappey") as session:
+        res = await session.call_tool("web_crawl", {"url": "https://example.com"})
+    payload = json.loads(res.content[0].text)
+    assert payload["provider"] == "cr"
+    assert payload["pages"][0]["title"] == "T"
+    assert "emulation" not in payload
+
+
+async def test_default_provider_still_pins_fetch():
+    # the default provider keeps serving capabilities it owns
+    router = Router([FakeProvider(), GateProvider()])
+    async with client_for(router, default_provider="scrappey") as session:
+        res = await session.call_tool("web_fetch", {"url": "https://x"})
+    payload = json.loads(res.content[0].text)
+    assert payload["provider"] == "scrappey"
+
+
+def test_load_playbook_falls_back_when_package_missing(monkeypatch):
+    from scrape_n_search import server as server_mod
+
+    def broken_files(_pkg):
+        raise OSError("no package data")
+
+    monkeypatch.setattr(server_mod.resources, "files", broken_files)
+    assert server_mod._load_playbook() == server_mod._PLAYBOOK_FALLBACK
+
+
+def test_load_playbook_reads_package():
+    from scrape_n_search import server as server_mod
+
+    text = server_mod._load_playbook()
+    assert "AliExpress" in text
+    assert "old.reddit" in text

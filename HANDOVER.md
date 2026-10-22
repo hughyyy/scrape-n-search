@@ -17,7 +17,7 @@ unified agent tools.
 
 ## Current state (all verified)
 
-- **138 tests pass** (`mcp-server/tests`).
+- **231 tests pass** (`mcp-server/tests`).
 - Registered with Oh My Pi on this machine: `~/.omp/agent/mcp.json` →
   `scrape-n-search` (stdio, `python -m scrape_n_search`, cwd=`mcp-server`, 120s timeout).
 - A real `SCRAPPEY_API_KEY` is set in `mcp-server/.env` (gitignored). `DEFAULT_PROVIDER=scrappey`
@@ -42,6 +42,26 @@ unified agent tools.
   search/crawl/extract via Scrappey + LLM web_extract").
 
 ## Since the previous handover (Oct 2026 session)
+
+- **`_preferred` is now capability-aware (bugfix, test-discovered)**: with
+  `DEFAULT_PROVIDER=scrappey`, every call was hard-pinned to Scrappey — the
+  router's `preferred` semantics force the provider, so a configured real
+  search/crawl/extract provider never got a chance and the emulation gate
+  always fired even when a paid provider was available. Now the default
+  provider is pinned only for capabilities it actually serves; otherwise
+  the router auto-selects (real provider wins, gate only fires when nothing
+  can serve the capability). An explicit `provider=` argument still pins.
+- **Test suite expanded 138 → 231**: direct `llm.py` tests (backend
+  resolution, thinking-off retry fallback, every error path, client
+  lifecycle), router edges (cache cap eviction, expired-entry cleanup,
+  HTTPError failover, non-caught exception propagation, disabled preferred),
+  Scrappey request-body details (proxy_country/session/innerText fallback,
+  browser html mode, screenshot selector + failures), Firecrawl crawl
+  states/extract/timeout, Jina key requirements + parse edges, emulated
+  search/crawl/extract edge cases (cycles, www/relative dedupe, scheme
+  switch, fragment dedup, parser tolerance), server gate error paths,
+  ENABLED_TOOLS env, playbook fallback, model to_dict, and the
+  real-provider-wins scenario.
 
 - **Emulated `web_search`/`web_crawl`/`web_extract` with a dual-run trigger** —
   Scrappey has no search/crawl/extract endpoints, so when it is the only configured provider the
