@@ -16,6 +16,8 @@ from scrape_n_search.providers.tavily import TavilyProvider
 from scrape_n_search.providers.tinyfish import TinyFishProvider
 from scrape_n_search.providers.zenrows import ZenRowsProvider
 
+from scrape_n_search.providers.base import BaseProvider
+
 from conftest import make_client
 
 
@@ -1016,3 +1018,74 @@ async def test_firecrawl_crawl_completed_without_data():
 async def test_firecrawl_extract_missing_data_returns_none():
     provider = FirecrawlProvider("k", make_client(lambda r: httpx.Response(200, json={"data": None})))
     assert await provider.extract("https://t") is None
+
+
+# --- BaseProvider: 'not implemented' stubs and disabled-by-empty-key ---------
+
+
+class BareProvider(BaseProvider):
+    """Declares all capabilities but overrides nothing: base stubs must raise."""
+
+    name = "bare"
+    capabilities = frozenset({"search", "fetch", "crawl", "extract", "session"})
+
+
+async def test_base_stubs_raise_not_implemented():
+    from scrape_n_search.errors import ProviderError
+
+    provider = BareProvider()
+    for tool, kwargs in [
+        ("search", {"query": "q"}),
+        ("fetch", {"url": "https://x"}),
+        ("crawl", {"url": "https://x"}),
+        ("extract", {"url": "https://x"}),
+        ("session", {"op": "create", "session": "s"}),
+    ]:
+        with pytest.raises(ProviderError, match="not implemented"):
+            await getattr(provider, tool)(**kwargs)
+
+
+async def test_base_stub_requires_declared_capability():
+    # capability not declared -> _require raises before the stub
+    from scrape_n_search.errors import ProviderError
+
+    provider = BaseProvider()  # empty capabilities
+    with pytest.raises(ProviderError, match="does not support 'search'"):
+        await provider.search("q")
+
+
+async def test_providers_disabled_by_empty_string_key():
+    assert not ExaProvider("").enabled
+    assert not FirecrawlProvider("").enabled
+    assert not SerperProvider("").enabled
+    assert not TinyFishProvider("").enabled
+    assert not ZenRowsProvider("").enabled
+    assert not ScrappeyProvider("").enabled
+    assert not TavilyProvider("").enabled
+
+
+async def test_scrappey_browser_actions_send_proxy_country_and_session():
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.read())
+        assert body["proxyCountry"] == "Germany"
+        assert body["session"] == "s1"
+        return httpx.Response(200, json={"solution": {"markdown": "# m"}, "data": "success"})
+
+    provider = ScrappeyProvider("k", make_client(handler))
+    await provider.browser_actions(
+        "https://example.com", actions=[{"type": "wait", "wait": 1}],
+        proxy_country="Germany", session="s1",
+    )
+
+
+async def test_scrappey_screenshot_send_proxy_country_and_session():
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.read())
+        assert body["proxyCountry"] == "UnitedKingdom"
+        assert body["session"] == "s2"
+        return httpx.Response(200, json={"solution": {"screenshot": "img"}, "data": "success"})
+
+    provider = ScrappeyProvider("k", make_client(handler))
+    assert await provider.screenshot(
+        "https://example.com", proxy_country="UnitedKingdom", session="s2"
+    ) == "img"

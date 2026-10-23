@@ -292,3 +292,17 @@ async def test_summarize_401_no_retry(monkeypatch):
     with pytest.raises(ProviderError, match="LLM summarize failed"):
         await llm.summarize("text")
     assert calls["n"] == 1  # auth errors are not retried without the param
+
+
+async def test_get_client_lazy_creates_and_aclose_resets():
+    # real (offline) client path: module-level lazy creation, close, recreate
+    llm._client = None
+    client = llm._get_client()
+    try:
+        assert client is llm._get_client()  # second call reuses
+    finally:
+        await llm.aclose()
+    assert llm._client is None
+    client2 = llm._get_client()  # recreated after close
+    await llm.aclose()
+    assert client2.is_closed

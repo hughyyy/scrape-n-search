@@ -729,3 +729,75 @@ async def test_schema_defaults_and_optional_params():
     assert "freshness" in search and "country" in search and "force" not in search
     assert schemas["web_search"]["required"] == ["query"]  # defaults are optional
     assert schemas["web_fetch"]["required"] == ["url"]
+
+
+async def test_no_provider_error_for_native_tools():
+    # browser_actions / screenshot / session are not emulated: no provider ->
+    # clean error json, no gate
+    async with client_for(Router([])) as session:
+        for tool, args in [
+            ("web_browser_actions", {"url": "https://x", "actions": [{"type": "wait", "wait": 1}]}),
+            ("web_screenshot", {"url": "https://x"}),
+            ("web_session", {"op": "create", "session": "s1"}),
+        ]:
+            res = await session.call_tool(tool, args)
+            payload = json.loads(res.content[0].text)
+            assert "error" in payload
+            assert "emulation" not in payload
+
+
+async def test_web_crawl_unknown_provider_surfaces_error():
+    provider = GateProvider()
+    async with client_for(Router([provider]), default_provider="scrappey") as session:
+        res = await session.call_tool("web_crawl", {"url": "https://x", "provider": "bogus"})
+    payload = json.loads(res.content[0].text)
+    assert "unknown provider 'bogus'" in payload["error"]
+    assert "emulation" not in payload
+    assert provider.fetch_calls == []
+
+
+async def test_web_extract_unknown_provider_surfaces_error():
+    provider = GateProvider()
+    async with client_for(Router([provider]), default_provider="scrappey") as session:
+        res = await session.call_tool("web_extract", {"url": "https://x", "provider": "bogus"})
+    payload = json.loads(res.content[0].text)
+    assert "unknown provider 'bogus'" in payload["error"]
+    assert "emulation" not in payload
+    assert provider.fetch_calls == []
+
+
+def test_hide_force_flags_strips_from_properties_and_required():
+    from types import SimpleNamespace
+
+    from scrape_n_search.server import _hide_force_flags
+
+    class FakeTool:
+        def __init__(self, parameters):
+            self.parameters = parameters
+
+    class FakeManager:
+        def __init__(self, tools):
+            self._tools = tools
+
+        def get_tool(self, name):
+            return self._tools.get(name)
+
+    params = {"properties": {"force": {"type": "boolean"}, "query": {"type": "string"}}, "required": ["force", "query"]}
+    tool = FakeTool(params)
+    server = SimpleNamespace(_tool_manager=FakeManager({"web_search": tool, "web_crawl": None}))
+    _hide_force_flags(server)
+    assert "force" not in tool.parameters["properties"]
+    assert tool.parameters["required"] == ["query"]
+    # absent tools are skipped without error
+
+
+def test_hide_force_flags_tolerates_missing_tool_manager():
+    from types import SimpleNamespace
+
+    from scrape_n_search.server import _hide_force_flags
+
+    class NoManager:
+        pass
+
+    server = SimpleNamespace(_tool_manager=NoManager())  # no get_tool attr
+    _hide_force_flags(server)  # must not raise; falls back to keeping the flag

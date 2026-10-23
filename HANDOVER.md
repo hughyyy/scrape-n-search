@@ -17,7 +17,16 @@ unified agent tools.
 
 ## Current state (all verified)
 
-- **273 tests pass** (`mcp-server/tests`).
+- **286 tests pass, 100% line coverage** (`mcp-server/tests`, verified with
+  `python -m coverage run --source=…/src/scrape_n_search -m pytest tests`).
+  Round three (273 → 286) closed the measured gaps: base-provider
+  "not implemented" stubs, empty-string-key disabling, Scrappey
+  browser_actions/screenshot proxy_country+session bodies, native-tool
+  no-provider error paths, unknown-provider surfacing for crawl/extract,
+  `_hide_force_flags` required-list stripping + manager-absence tolerance,
+  `main()` boot wiring, the `__main__` guard (in-process runpy), and the
+  lazy LLM client creation. Also removed a dead unreachable raise in
+  `llm.summarize`.
 - Registered with Oh My Pi on this machine: `~/.omp/agent/mcp.json` →
   `scrape-n-search` (stdio, `python -m scrape_n_search`, cwd=`mcp-server`, 120s timeout).
 - A real `SCRAPPEY_API_KEY` is set in `mcp-server/.env` (gitignored). `DEFAULT_PROVIDER=scrappey`

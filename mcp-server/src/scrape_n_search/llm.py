@@ -151,4 +151,3 @@ async def summarize(page_text: str, *, instruction: str | None = None) -> str:
         if not content or not content.strip():
             raise ProviderError("LLM summarize failed: empty completion")
         return content.strip()
-    raise ProviderError("LLM summarize failed: retry without thinking-off also failed")

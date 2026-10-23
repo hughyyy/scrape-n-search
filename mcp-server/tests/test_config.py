@@ -231,3 +231,49 @@ async def test_build_router_priority_ignores_unknown_names(monkeypatch):
         assert router._order == [p.name for p in router._providers.values()]
     finally:
         await router.aclose()
+
+
+# --- main(): full boot wiring -----------------------------------------------
+
+
+def test_main_wires_env_logging_router_server(monkeypatch):
+    from mcp.server.mcpserver import MCPServer
+
+    from scrape_n_search import __main__ as m
+
+    calls: dict = {"dotenv": [], "run": None}
+    monkeypatch.setattr(m, "load_dotenv", lambda *a, **k: calls["dotenv"].append((a, k)))
+    monkeypatch.delenv("LOG_LEVEL", raising=False)
+    monkeypatch.delenv("DEFAULT_PROVIDER", raising=False)
+    monkeypatch.delenv("ENABLED_TOOLS", raising=False)
+
+    def fake_run(self, transport=None):
+        calls["run"] = transport
+
+    monkeypatch.setattr(MCPServer, "run", fake_run)
+    m.main()
+    # both dotenv loaders ran (cwd chain + project .env)
+    assert len(calls["dotenv"]) == 2
+    assert calls["run"] == "stdio"
+
+
+def test_main_guard_executes_server_under_main(monkeypatch):
+    import runpy
+    import sys
+
+    from mcp.server.mcpserver import MCPServer
+
+    calls = {"run": None}
+
+    def fake_run(self, transport=None):
+        calls["run"] = transport
+
+    monkeypatch.setattr(MCPServer, "run", fake_run)
+    monkeypatch.delenv("LOG_LEVEL", raising=False)
+    monkeypatch.delenv("DEFAULT_PROVIDER", raising=False)
+    monkeypatch.delenv("ENABLED_TOOLS", raising=False)
+    # re-execute the module with __name__ == "__main__": exercises the guard.
+    # Drop the previously-imported copy first so runpy reloads it cleanly.
+    monkeypatch.delitem(sys.modules, "scrape_n_search.__main__", raising=False)
+    runpy.run_module("scrape_n_search.__main__", run_name="__main__")
+    assert calls["run"] == "stdio"
