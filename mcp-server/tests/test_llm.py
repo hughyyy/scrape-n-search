@@ -11,11 +11,9 @@ from __future__ import annotations
 
 import httpx
 import pytest
-
+from conftest import make_client
 from scrape_n_search import llm
 from scrape_n_search.errors import ProviderError
-
-from conftest import make_client
 
 
 def _patch_client(monkeypatch, handler) -> httpx.AsyncClient:
@@ -89,7 +87,9 @@ async def test_summarize_openrouter_request_shape(monkeypatch):
     assert body["max_tokens"] == 4096
     assert body["reasoning"] == {"effort": "none"}  # thinking off for OpenRouter
     assert body["messages"][0]["role"] == "system"
+    assert "untrusted" in body["messages"][0]["content"]
     assert body["messages"][1]["content"] == "Extraction focus for this page: prices"
+    assert "<page_content>" in body["messages"][-1]["content"]
     assert "page text here" in body["messages"][-1]["content"]
 
 

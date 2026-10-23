@@ -4,10 +4,8 @@ from __future__ import annotations
 
 import logging
 
-import httpx
 import pytest
-
-from scrape_n_search.__main__ import build_router_from_env, log_level_from_env
+from scrape_n_search.__main__ import build_router_from_env, build_server_from_env, log_level_from_env
 from scrape_n_search.providers import build_providers, configured_timeout
 from scrape_n_search.providers.base import DEFAULT_TIMEOUT
 from scrape_n_search.router import Router
@@ -238,7 +236,6 @@ async def test_build_router_priority_ignores_unknown_names(monkeypatch):
 
 def test_main_wires_env_logging_router_server(monkeypatch):
     from mcp.server.mcpserver import MCPServer
-
     from scrape_n_search import __main__ as m
 
     calls: dict = {"dotenv": [], "run": None}
@@ -312,5 +309,97 @@ async def test_provider_priority_duplicates_collapse(monkeypatch):
         names = [p.name for p in router.available("fetch")]
         assert names[:1] == ["jina"]  # first occurrence keeps its position
         assert names.count("jina") == 1  # never offered twice
+    finally:
+        await router.aclose()
+
+
+# --- log redaction wiring ---------------------------------------------------
+
+
+def test_configure_logging_installs_redact_filter_once(monkeypatch):
+    from scrape_n_search.__main__ import configure_logging
+    from scrape_n_search.logging_utils import RedactFilter
+
+    handler = logging.StreamHandler()
+    monkeypatch.setattr(logging, "basicConfig", lambda **kw: logging.getLogger().addHandler(handler))
+    try:
+        configure_logging()
+        configure_logging()  # idempotent: never stacks duplicate filters
+        filters = [f for f in handler.filters if isinstance(f, RedactFilter)]
+        assert len(filters) == 1
+    finally:
+        logging.getLogger().removeHandler(handler)
+
+
+# --- startup validation -----------------------------------------------------
+
+
+def test_main_rejects_invalid_extract_max_chars(monkeypatch):
+    import scrape_n_search.__main__ as main_mod
+
+    monkeypatch.setattr(main_mod, "load_dotenv", lambda *a, **kw: None)
+    monkeypatch.setenv("EXTRACT_MAX_CHARS", "bogus")
+    with pytest.raises(ValueError, match="EXTRACT_MAX_CHARS"):
+        main_mod.main()
+
+
+def test_project_dir_env_override(monkeypatch, tmp_path):
+    import importlib
+
+    import scrape_n_search.__main__ as main_mod
+
+    monkeypatch.setenv("SCRAPE_N_SEARCH_ENV_DIR", str(tmp_path))
+    try:
+        assert importlib.reload(main_mod).PROJECT_DIR == tmp_path
+    finally:
+        monkeypatch.delenv("SCRAPE_N_SEARCH_ENV_DIR", raising=False)
+        importlib.reload(main_mod)
+
+
+# --- packaging / env-example regressions -----------------------------------
+
+
+def test_version_matches_pyproject():
+    import re
+    from pathlib import Path
+
+    import scrape_n_search
+
+    text = (Path(__file__).resolve().parents[1] / "pyproject.toml").read_text(encoding="utf-8")
+    declared = re.search(r'^version = "([^"]+)"', text, re.MULTILINE).group(1)
+    assert declared == scrape_n_search.__version__
+
+
+def test_env_example_does_not_pin_a_default_provider():
+    from pathlib import Path
+
+    text = (Path(__file__).resolve().parents[1] / ".env.example").read_text(encoding="utf-8")
+    active = [
+        line.strip()
+        for line in text.splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+    assert not any(line.startswith("DEFAULT_PROVIDER=") for line in active)
+
+
+async def test_server_boots_with_a_single_non_scrappey_key(monkeypatch):
+    for key in (
+        "TINYFISH_API_KEY",
+        "TAVILY_API_KEY",
+        "EXA_API_KEY",
+        "ZENROWS_API_KEY",
+        "SCRAPPEY_API_KEY",
+        "FIRECRAWL_API_KEY",
+        "SERPER_API_KEY",
+        "JINA_API_KEY",
+    ):
+        monkeypatch.setenv(key, "")
+    monkeypatch.delenv("DEFAULT_PROVIDER", raising=False)
+    monkeypatch.setenv("TAVILY_API_KEY", "k")
+    monkeypatch.setenv("JINA_KEYLESS", "0")
+    monkeypatch.delenv("HTTP_TIMEOUT", raising=False)
+    router = build_router_from_env()
+    try:
+        assert build_server_from_env(router) is not None
     finally:
         await router.aclose()

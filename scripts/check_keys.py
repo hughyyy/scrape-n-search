@@ -49,7 +49,7 @@ def _request(method: str, url: str, *, headers: dict | None = None, body: dict |
     except urllib.error.HTTPError as e:
         raw = e.read().decode("utf-8", "replace")
         return e.code, raw
-    except Exception as e:  # noqa: BLE001 - any network error is a failed probe
+    except Exception as e:
         raise SystemExit(f"FAIL network error: {e}") from e
 
 

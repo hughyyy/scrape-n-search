@@ -39,7 +39,8 @@ payload). The caller explicitly re-invokes with the documented flag to run:
   anti-bot changes can degrade parsing.
 - `web_crawl` → breadth-first walk of same-host pages, one basic-mode fetch per
   page (up to `max_pages` billed requests), raw HTML content per page. No JS
-  rendering, no partial results on page errors.
+  rendering. A page that fails to fetch is reported in `failures` and skipped; the
+  crawl continues with the pages already fetched.
 - `web_extract` → one Scrappey fetch plus one LLM call. Basic mode
   (`js_render=false`, €0.10/1K) strips the raw HTML to text locally;
   `js_render=true` uses full browser mode (€1/1K) and passes Scrappey's markdown
@@ -83,13 +84,14 @@ The unified `web_fetch` tool maps its params onto Scrappey's `requestType`:
 | `js_render: false` | `requestType: "request"` (direct HTTP) | €0.10/1K | Raw HTML (`solution.response`), no JS rendering. Good for simple searches / APIs / static pages. |
 | `js_render: true` | `requestType: "browser"` (full browser) | €1.00/1K | Rendered page; JS-heavy sites (Reddit, AliExpress). Markdown via `solution.markdown`. |
 
-### Markdown is browser-only
+### Markdown is browser-only (the adapter reduces basic-mode HTML)
 
 Scrappey converts pages to Markdown **only in browser mode**. Basic mode has no
-browser, so the provider never sends `filter:["markdown"]` there — it returns the raw
-HTML response and labels the result `format: "html"`, even if `format: "markdown"` was
-requested. (Requesting markdown in basic mode otherwise errors with
-`The filter key you provided markdown was not found`.)
+browser, so the provider never sends `filter:["markdown"]` there (the API errors with
+`The filter key you provided markdown was not found`). When the caller asks for
+`format: "markdown"` in basic mode, the adapter strips the raw HTML to readable text
+locally and labels the result `format: "markdown"`; `format: "html"` keeps the raw
+response. Use `js_render=true` for true Markdown.
 
 ### Other `web_fetch` params
 
@@ -168,10 +170,13 @@ extracting.
 - **AliExpress**: search + item pages fetch fine in browser mode; full product
   descriptions are lazy-loaded (not in the initial HTML, and the legacy description API
   returns 404) — expand them with `browserActions` (click "View more") via the direct API.
-- **DuckDuckGo html** challenges basic mode (bot CAPTCHA); Bing works in basic mode.
+- **DuckDuckGo html** challenges basic mode (bot CAPTCHA). Bing pages fetch in basic
+  mode, but Bing *result pages* are unreliable there (stale cached SERPs); use browser
+  mode for SERPs.
 
 ## Failover
 
 If Scrappey errors, the router fails over to the next configured fetch provider (e.g.
 Jina keyless). The `web_fetch` response names the actual serving provider, so a
-Scrappey failure is visible as `provider: "jina"` rather than an error.
+Scrappey failure is visible as `provider: "jina"` rather than an error. An explicit
+per-call `provider: "scrappey"` pins it and does **not** fail over.

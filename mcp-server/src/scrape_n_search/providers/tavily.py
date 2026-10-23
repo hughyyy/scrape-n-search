@@ -10,10 +10,14 @@ from .base import BaseProvider
 
 BASE = "https://api.tavily.com"
 
+# Tavily's time_range has no "hour"; the closest supported window is a day.
+_TIME_RANGE = {"hour": "day", "day": "day", "week": "week", "month": "month", "year": "year"}
+
 
 class TavilyProvider(BaseProvider):
     name = "tavily"
     capabilities = frozenset({"search", "fetch"})
+    fetch_formats = frozenset({"markdown"})
 
     def __init__(self, api_key: str | None, client: httpx.AsyncClient | None = None):
         super().__init__(client)
@@ -44,7 +48,7 @@ class TavilyProvider(BaseProvider):
             "topic": topic,
         }
         if freshness:
-            body["time_range"] = freshness
+            body["time_range"] = _TIME_RANGE.get(freshness, freshness)
         if country:
             body["country"] = country
         if include_domains:

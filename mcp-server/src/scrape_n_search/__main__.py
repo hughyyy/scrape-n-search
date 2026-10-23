@@ -10,13 +10,18 @@ from pathlib import Path
 import httpx
 from dotenv import load_dotenv
 
+from .emulation import _llm_max_chars
+from .logging_utils import RedactFilter
 from .providers import DEFAULT_PRIORITY, build_providers, configured_timeout
 from .router import Router
 from .server import build_server
 
 # Directory containing this package's project (…/mcp-server), used to locate
-# .env regardless of the process working directory.
-PROJECT_DIR = Path(__file__).resolve().parent.parent.parent
+# .env regardless of the process working directory. Overridable for wheel
+# installs, where it cannot be derived from the installed package path.
+PROJECT_DIR = Path(
+    os.environ.get("SCRAPE_N_SEARCH_ENV_DIR") or Path(__file__).resolve().parent.parent.parent
+)
 
 
 def log_level_from_env() -> int:
@@ -35,6 +40,11 @@ def configure_logging() -> None:
         level=log_level_from_env(),
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
+    # Provider keys ride in URLs, so httpx/router log lines must be redacted
+    # before any handler formats them.
+    for handler in logging.getLogger().handlers:
+        if not any(isinstance(existing, RedactFilter) for existing in handler.filters):
+            handler.addFilter(RedactFilter())
 
 
 def build_router_from_env() -> Router:
@@ -70,6 +80,9 @@ def main() -> None:
     # are not overwritten.
     load_dotenv()
     load_dotenv(PROJECT_DIR / ".env")
+    # Fail loudly at startup on a malformed numeric knob, not on first use.
+    if os.environ.get("EXTRACT_MAX_CHARS"):
+        _llm_max_chars()
     configure_logging()
     router = build_router_from_env()
     server = build_server_from_env(router)

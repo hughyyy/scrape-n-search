@@ -9,12 +9,11 @@ import httpx
 import pytest
 from mcp.client.client import InMemoryTransport
 from mcp.client.session import ClientSession
-
+from scrape_n_search.errors import ProviderError
 from scrape_n_search.models import BrowserActionsResult, CrawlPage, FetchedPage, SearchResult
 from scrape_n_search.providers.base import BaseProvider
 from scrape_n_search.router import Router
 from scrape_n_search.server import build_server
-from scrape_n_search.errors import ProviderError
 
 
 class FakeProvider(BaseProvider):
@@ -528,22 +527,17 @@ async def test_emulated_extract_force_without_llm_key_errors(monkeypatch):
     assert "OPENROUTER_API_KEY" in payload["error"]
 
 
-async def test_emulated_extract_js_render_in_schema_only_without_force():
+async def test_emulated_tools_expose_force_and_extract_js_render():
     async with client_for(Router([FakeProvider()])) as session:
         tools = await session.list_tools()
         schemas = {t.name: t.input_schema for t in tools.tools}
-    props = schemas["web_extract"]["properties"]
-    assert "js_render" in props
-    assert "force" not in props
-
-
-async def test_force_flag_absent_from_all_tool_schemas():
-    async with client_for(Router([FakeProvider()])) as session:
-        tools = await session.list_tools()
-        schemas = {t.name: t.input_schema for t in tools.tools}
-    for schema in schemas.values():
-        assert "force" not in schema["properties"]
-
+    assert "js_render" in schemas["web_extract"]["properties"]
+    for name in ("web_search", "web_crawl", "web_extract"):
+        force = schemas[name]["properties"]["force"]
+        assert force["type"] == "boolean" and force["default"] is False
+    # native tools do not offer the emulation flag
+    for name in ("web_fetch", "web_browser_actions", "web_screenshot", "web_session"):
+        assert "force" not in schemas[name]["properties"]
 
 async def test_emulated_gate_needs_enabled_scrappey():
     # Scrappey present but disabled -> the original router error, not a gate
@@ -727,7 +721,7 @@ async def test_schema_defaults_and_optional_params():
     assert schemas["web_fetch"]["properties"]["format"]["default"] == "markdown"
     assert schemas["web_browser_actions"]["properties"]["format"]["default"] == "markdown"
     search = schemas["web_search"]["properties"]
-    assert "freshness" in search and "country" in search and "force" not in search
+    assert "freshness" in search and "country" in search and "force" in search
     assert schemas["web_search"]["required"] == ["query"]  # defaults are optional
     assert schemas["web_fetch"]["required"] == ["url"]
 
@@ -767,42 +761,6 @@ async def test_web_extract_unknown_provider_surfaces_error():
     assert provider.fetch_calls == []
 
 
-def test_hide_force_flags_strips_from_properties_and_required():
-    from types import SimpleNamespace
-
-    from scrape_n_search.server import _hide_force_flags
-
-    class FakeTool:
-        def __init__(self, parameters):
-            self.parameters = parameters
-
-    class FakeManager:
-        def __init__(self, tools):
-            self._tools = tools
-
-        def get_tool(self, name):
-            return self._tools.get(name)
-
-    params = {"properties": {"force": {"type": "boolean"}, "query": {"type": "string"}}, "required": ["force", "query"]}
-    tool = FakeTool(params)
-    server = SimpleNamespace(_tool_manager=FakeManager({"web_search": tool, "web_crawl": None}))
-    _hide_force_flags(server)
-    assert "force" not in tool.parameters["properties"]
-    assert tool.parameters["required"] == ["query"]
-    # absent tools are skipped without error
-
-
-def test_hide_force_flags_tolerates_missing_tool_manager():
-    from types import SimpleNamespace
-
-    from scrape_n_search.server import _hide_force_flags
-
-    class NoManager:
-        pass
-
-    server = SimpleNamespace(_tool_manager=NoManager())  # no get_tool attr
-    _hide_force_flags(server)  # must not raise; falls back to keeping the flag
-
 
 async def test_disabled_scrappey_with_other_default_provider():
     # scrappey present but disabled: the emulated-tools union is skipped
@@ -816,22 +774,6 @@ async def test_enabled_tools_excluding_fetch_skips_its_block():
     names = await _list_names(Router([FetchOnlyProvider()]), enabled_tools={"web_search"})
     assert names == {"web_search"}
 
-
-def test_hide_force_flags_tolerates_non_dict_properties():
-    from types import SimpleNamespace
-
-    from scrape_n_search.server import _hide_force_flags
-
-    class FakeTool:
-        def __init__(self, parameters):
-            self.parameters = parameters
-
-    class FakeManager:
-        def get_tool(self, name):
-            return FakeTool({"properties": None, "required": None})
-
-    server = SimpleNamespace(_tool_manager=FakeManager())
-    _hide_force_flags(server)  # must not raise on malformed schema shapes
 
 
 # --- inclusive bounds and default argument plumbing ---------------------
@@ -957,7 +899,6 @@ async def test_malformed_provider_surfaces_aggregated_error_json():
     # full chain: shape-invalid 200 -> ProviderError -> router aggregation ->
     # tool JSON error (never an unhandled crash through the MCP transport)
     from conftest import make_client
-
     from scrape_n_search.providers.tavily import TavilyProvider
 
 
@@ -966,7 +907,161 @@ async def test_malformed_provider_surfaces_aggregated_error_json():
     )
     async with client_for(Router([malformed])) as session:
         res = await session.call_tool("web_search", {"query": "q"})
-    assert not res.is_error
+    assert res.is_error
     payload = json.loads(res.content[0].text)
     assert "all providers failed for 'search'" in payload["error"]
     assert "malformed 'results'" in payload["error"]
+
+
+# --- pinning, validation, response caps, and native image output -----------
+
+
+class FailingSearch(BaseProvider):
+    name = "failing"
+    capabilities = frozenset({"search"})
+
+    async def search(self, query: str, **kw):
+        raise ProviderError("search exploded")
+
+
+class CountingSearch(BaseProvider):
+    name = "fake"
+    capabilities = frozenset({"search"})
+
+    def __init__(self):
+        super().__init__()
+        self.calls = 0
+
+    async def search(self, query: str, **kw):
+        self.calls += 1
+        return [SearchResult(title=query, url="https://fake", snippet="s")]
+
+async def test_explicit_pin_does_not_fail_over():
+    other = CountingSearch()
+    async with client_for(Router([FailingSearch(), other])) as session:
+        res = await session.call_tool("web_search", {"query": "q", "provider": "failing"})
+    payload = json.loads(res.content[0].text)
+    assert res.is_error
+    assert "all providers failed for 'search'" in payload["error"]
+    assert other.calls == 0
+
+
+async def test_gate_explanation_is_marked_as_error():
+    async with client_for(Router([GateProvider()]), default_provider="scrappey") as session:
+        res = await session.call_tool("web_search", {"query": "x"})
+    payload = json.loads(res.content[0].text)
+    assert payload["emulation"]["executed"] is False
+    assert res.is_error
+
+
+async def test_empty_inputs_rejected_without_provider_calls():
+    provider = RecordingProvider()
+    async with client_for(Router([provider])) as session:
+        cases = [
+            ("web_search", {"query": "   "}),
+            ("web_fetch", {"url": ""}),
+            ("web_crawl", {"url": " "}),
+            ("web_extract", {"url": ""}),
+            ("web_screenshot", {"url": ""}),
+            ("web_browser_actions", {"url": "", "actions": [{"type": "wait", "wait": 1}]}),
+        ]
+        for tool, args in cases:
+            res = await session.call_tool(tool, args)
+            assert res.is_error, tool
+            assert "must not be empty" in res.content[0].text, tool
+    assert provider.calls == {}
+
+
+class LongFetchProvider(BaseProvider):
+    name = "long"
+    capabilities = frozenset({"fetch"})
+
+    async def fetch(self, url: str, **kw) -> FetchedPage:
+        return FetchedPage(url=url, content="x" * 10)
+
+
+async def test_web_fetch_max_chars_truncates_and_reports():
+    async with client_for(Router([LongFetchProvider()])) as session:
+        cut = json.loads(
+            (await session.call_tool("web_fetch", {"url": "https://x", "max_chars": 4}))
+            .content[0]
+            .text
+        )
+        exact = json.loads(
+            (await session.call_tool("web_fetch", {"url": "https://x", "max_chars": 10}))
+            .content[0]
+            .text
+        )
+        bad = await session.call_tool("web_fetch", {"url": "https://x", "max_chars": 0})
+    assert cut["content"] == "xxxx"
+    assert cut["truncated"] is True and cut["original_length"] == 10
+    assert "truncated" not in exact
+    assert bad.is_error and "max_chars" in bad.content[0].text
+
+
+async def test_web_screenshot_image_output():
+    provider = RecordingProvider()
+    async with client_for(Router([provider])) as session:
+        res = await session.call_tool("web_screenshot", {"url": "https://x", "output": "image"})
+    assert res.content[0].type == "image"
+    assert res.content[0].data == "aGVsbG8="
+    assert json.loads(res.structured_content["result"])["format"] == "png"
+
+
+class PartialGateProvider(GateProvider):
+    async def fetch(self, url: str, **kw) -> FetchedPage:
+        self.fetch_calls.append((url, dict(kw)))
+        if url.endswith("/broken"):
+            raise ProviderError("page is down")
+        return FetchedPage(url=url, content=self.page_html, title=None)
+
+
+async def test_emulated_crawl_reports_failures():
+    page = '<html><head><title>Home</title></head><body><a href="/ok">ok</a><a href="/broken">bad</a></body></html>'
+    provider = PartialGateProvider(page_html=page)
+    async with client_for(Router([provider]), default_provider="scrappey") as session:
+        res = await session.call_tool(
+            "web_crawl", {"url": "https://example.com", "max_depth": 1, "force": True}
+        )
+    payload = json.loads(res.content[0].text)
+    assert [p["url"] for p in payload["pages"]] == [
+        "https://example.com",
+        "https://example.com/ok",
+    ]
+    assert payload["failures"][0]["url"] == "https://example.com/broken"
+    assert "page is down" in payload["failures"][0]["error"]
+
+
+class TransportGateProvider(GateProvider):
+    async def fetch(self, url: str, **kw) -> FetchedPage:
+        self.fetch_calls.append((url, dict(kw)))
+        request = httpx.Request("POST", "https://publisher.scrappey.com/api/v1?key=SECRET")
+        raise httpx.ConnectError("connection refused", request=request)
+
+
+async def test_emulated_force_transport_error_returns_json():
+    async with client_for(Router([TransportGateProvider()]), default_provider="scrappey") as session:
+        res = await session.call_tool("web_search", {"query": "x", "force": True})
+    assert res.is_error
+    payload = json.loads(res.content[0].text)
+    assert "emulated search via scrappey failed" in payload["error"]
+    assert "connection refused" in payload["error"]
+    assert "SECRET" not in res.content[0].text  # key redacted
+
+
+class WordyFailureProvider(BaseProvider):
+    name = "wordy"
+    capabilities = frozenset({"search"})
+
+    async def search(self, query: str, **kw):
+        raise ProviderError("upstream is not configured correctly")
+
+
+async def test_gate_ignores_message_collisions():
+    # classification is by exception type: a provider message that happens to
+    # contain "is not configured" must still be an environment failure
+    async with client_for(Router([WordyFailureProvider(), GateProvider()])) as session:
+        res = await session.call_tool("web_search", {"query": "x"})
+    payload = json.loads(res.content[0].text)
+    assert payload["emulation"]["executed"] is False
+    assert res.is_error

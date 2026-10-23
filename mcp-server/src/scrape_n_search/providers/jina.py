@@ -48,6 +48,7 @@ def _field(block: str, key: str) -> str:
 class JinaProvider(BaseProvider):
     name = "jina"
     capabilities = frozenset({"search", "fetch"})
+    fetch_formats = frozenset({"markdown"})
 
     def __init__(self, api_key: str | None = None, client: httpx.AsyncClient | None = None):
         super().__init__(client)

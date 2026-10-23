@@ -7,7 +7,7 @@ import json
 
 import httpx
 import pytest
-
+from conftest import make_client
 from scrape_n_search.errors import ProviderError
 from scrape_n_search.providers.base import BaseProvider
 from scrape_n_search.providers.exa import ExaProvider
@@ -18,8 +18,6 @@ from scrape_n_search.providers.serper import SerperProvider
 from scrape_n_search.providers.tavily import TavilyProvider
 from scrape_n_search.providers.tinyfish import TinyFishProvider
 from scrape_n_search.providers.zenrows import ZenRowsProvider
-
-from conftest import make_client
 
 
 async def test_tavily_search_normalizes():
@@ -160,15 +158,34 @@ async def test_firecrawl_search_normalizes():
 async def test_firecrawl_fetch_normalizes():
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.url.path == "/v2/scrape"
+        # v2 nests title/url under data.metadata
         return httpx.Response(
             200,
-            json={"success": True, "data": {"url": "https://t", "title": "T", "markdown": "# body"}},
+            json={
+                "success": True,
+                "data": {
+                    "markdown": "# body",
+                    "metadata": {"title": "T", "url": "https://final"},
+                },
+            },
         )
 
     provider = FirecrawlProvider("k", make_client(handler))
     page = await provider.fetch("https://t")
     assert page.content == "# body"
     assert page.title == "T"
+    assert page.url == "https://final"
+
+
+async def test_firecrawl_fetch_accepts_list_title():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"data": {"markdown": "x", "metadata": {"title": ["A", "B"]}}},
+        )
+
+    provider = FirecrawlProvider("k", make_client(handler))
+    assert (await provider.fetch("https://t")).title == "A B"
 
 
 async def test_firecrawl_crawl_polls_to_completion():
@@ -282,11 +299,26 @@ async def test_scrappey_basic_mode_never_requests_markdown():
         assert body == {"cmd": "request.get", "url": "https://example.com", "requestType": "request"}
         return httpx.Response(
             200,
-            json={"solution": {"response": "<html>raw</html>", "innerText": "raw"}, "data": "success"},
+            json={"solution": {"response": "<html><body><p>raw</p></body></html>", "innerText": "raw"}, "data": "success"},
         )
 
     provider = ScrappeyProvider("k", make_client(handler))
     page = await provider.fetch("https://example.com", format="markdown", js_render=False)
+    # the API cannot convert; the adapter reduces HTML to readable text so the
+    # requested markdown shape is honored as closely as basic mode allows.
+    assert page.content == "raw"
+    assert page.format == "markdown"
+
+
+async def test_scrappey_basic_mode_html_stays_raw():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"solution": {"response": "<html>raw</html>"}, "data": "success"},
+        )
+
+    provider = ScrappeyProvider("k", make_client(handler))
+    page = await provider.fetch("https://example.com", format="html", js_render=False)
     assert page.content == "<html>raw</html>"
     assert page.format == "html"
 
@@ -634,11 +666,30 @@ async def test_firecrawl_crawl_times_out():
         await provider.crawl("https://t", poll_interval=0.01, timeout=0.02)
 
 
+async def test_firecrawl_extract_polls_async_job():
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append((request.method, request.url.path))
+        if request.method == "POST":
+            return httpx.Response(200, json={"success": True, "id": "job1"})
+        return httpx.Response(
+            200,
+            json={"success": True, "status": "completed", "data": {"title": "T"}},
+        )
+
+    provider = FirecrawlProvider("k", make_client(handler))
+    assert await provider.extract("https://t", prompt="price") == {"title": "T"}
+    assert calls[0] == ("POST", "/v2/extract")
+    assert ("GET", "/v2/extract/job1") in calls
+
+
 async def test_firecrawl_extract_sends_prompt_only_when_given():
     seen = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         seen.append(json.loads(request.read()))
+        # no job id -> synchronous/legacy inline response
         return httpx.Response(200, json={"data": {"title": "T"}})
 
     provider = FirecrawlProvider("k", make_client(handler))
@@ -646,6 +697,28 @@ async def test_firecrawl_extract_sends_prompt_only_when_given():
     assert await provider.extract("https://t") == {"title": "T"}
     assert seen[0] == {"urls": ["https://t"], "prompt": "price"}
     assert seen[1] == {"urls": ["https://t"]}
+
+
+async def test_firecrawl_extract_failed_state_raises():
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST":
+            return httpx.Response(200, json={"id": "job1"})
+        return httpx.Response(200, json={"status": "failed"})
+
+    provider = FirecrawlProvider("k", make_client(handler))
+    with pytest.raises(ProviderError, match="failed"):
+        await provider.extract("https://t", poll_interval=0.01, timeout=1)
+
+
+async def test_firecrawl_extract_times_out():
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST":
+            return httpx.Response(200, json={"id": "job1"})
+        return httpx.Response(200, json={"status": "processing"})
+
+    provider = FirecrawlProvider("k", make_client(handler))
+    with pytest.raises(ProviderError, match="timed out"):
+        await provider.extract("https://t", poll_interval=0.01, timeout=0.02)
 
 
 # --- Jina: key requirements, fetch errors, parse edges ---------------------
@@ -864,6 +937,31 @@ async def test_tavily_search_defaults_body():
     assert await provider.search("q") == []
 
 
+async def test_tavily_search_maps_hour_freshness_to_day():
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert json.loads(request.read())["time_range"] == "day"
+        return httpx.Response(200, json={"results": []})
+
+    provider = TavilyProvider("k", make_client(handler))
+    assert await provider.search("q", freshness="hour") == []
+
+
+
+def test_fetch_format_declarations_match_adapters():
+    from scrape_n_search.providers.exa import ExaProvider
+    from scrape_n_search.providers.firecrawl import FirecrawlProvider
+    from scrape_n_search.providers.jina import JinaProvider
+    from scrape_n_search.providers.scrappey import ScrappeyProvider
+    from scrape_n_search.providers.tavily import TavilyProvider
+    from scrape_n_search.providers.tinyfish import TinyFishProvider
+    from scrape_n_search.providers.zenrows import ZenRowsProvider
+
+    assert ExaProvider.fetch_formats == frozenset({"markdown"})
+    assert TavilyProvider.fetch_formats == frozenset({"markdown"})
+    assert JinaProvider.fetch_formats == frozenset({"markdown"})
+    for cls in (FirecrawlProvider, ScrappeyProvider, TinyFishProvider, ZenRowsProvider):
+        assert cls.fetch_formats == frozenset({"markdown", "html"})
+
 # --- TinyFish: search params, result cap, fetch error ------------------------
 
 
@@ -896,7 +994,7 @@ async def test_tinyfish_search_caps_results():
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
             200,
-            json={"results": [{f"title": f"r{i}", "url": f"https://t/{i}"} for i in range(10)]},
+            json={"results": [{"title": f"r{i}", "url": f"https://t/{i}"} for i in range(10)]},
         )
 
     provider = TinyFishProvider("k", make_client(handler))

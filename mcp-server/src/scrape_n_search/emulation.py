@@ -30,14 +30,18 @@ import logging
 import os
 import re
 import urllib.parse
-from bisect import bisect_left
 from collections import deque
 from html.parser import HTMLParser
 from urllib.parse import urldefrag, urljoin, urlparse
 
+import httpx
+
 from . import llm
 from .errors import ProviderError
-from .models import CrawlPage, SearchResult
+from .htmltext import clean_text
+from .htmltext import html_to_text as _html_to_text
+from .htmltext import strip_blocks as _strip_blocks
+from .models import CrawlFailure, CrawlOutcome, CrawlPage, SearchResult
 from .providers.base import BaseProvider
 
 logger = logging.getLogger(__name__)
@@ -48,13 +52,8 @@ BING_SEARCH = "https://www.bing.com/search"
 # EXTRACT_MAX_CHARS. Bounds context size and per-call cost.
 _DEFAULT_MAX_EXTRACT_CHARS = 100_000
 
-# Blocks that carry markup, scripting, or chrome — never page content.
-_BLOCK_TAG_GROUP = r"(script|style|noscript|template|svg|iframe|head)"
-_BLOCK_OPEN_RE = re.compile(rf"<{_BLOCK_TAG_GROUP}\b[^>]*>", re.IGNORECASE | re.DOTALL)
-_BLOCK_CLOSE_RE = re.compile(rf"</{_BLOCK_TAG_GROUP}>", re.IGNORECASE)
-
-# A tag may not contain '<'; excluding it keeps the scan linear on tag soup.
-_TAG_RE = re.compile(r"<[^<>]+>")
+# Comments carry no navigable content (and often hold commented-out links).
+_COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
 
 # Cap links harvested from one page; bounds BFS fan-out on huge pages.
 _MAX_LINKS_PER_PAGE = 200
@@ -106,8 +105,7 @@ def _unredirect(url: str) -> str:
     return url
 
 
-def _clean_text(text: str) -> str:
-    return re.sub(r"\s+", " ", text).strip()
+_clean_text = clean_text
 
 
 def _join_text(pieces: list[str] | None) -> str:
@@ -126,7 +124,11 @@ class _BingSERPParser(HTMLParser):
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
         self.results: list[SearchResult] = []
-        self._li_depth = 0
+        # One entry per open <li>, True when it is a b_algo result. A plain
+        # <li> nested inside a result (deep-link or related-item lists) must
+        # not end the surrounding result — only the matching b_algo closer does.
+        self._li_stack: list[bool] = []
+        self._algo_depth = 0
         self._cur: dict[str, str] | None = None
         self._in_h2 = False
         self._in_p = False
@@ -134,12 +136,17 @@ class _BingSERPParser(HTMLParser):
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         attr_dict = dict(attrs)
-        if tag == "li" and "b_algo" in (attr_dict.get("class") or "").split():
-            self._li_depth += 1
-            if self._li_depth == 1:
-                self._cur = {"url": "", "title": "", "snippet": ""}
+        if tag == "li":
+            is_result = "b_algo" in (attr_dict.get("class") or "").split()
+            self._li_stack.append(is_result)
+            if is_result:
+                self._algo_depth += 1
+                if self._algo_depth == 1:
+                    self._cur = {"url": "", "title": "", "snippet": ""}
             return
-        if self._li_depth == 0:
+        # Only the outermost result is captured: content inside a nested
+        # b_algo (malformed markup) must not overwrite the outer title/url.
+        if self._algo_depth != 1:
             return
         if tag == "h2":
             self._in_h2 = True
@@ -151,13 +158,17 @@ class _BingSERPParser(HTMLParser):
             self._buf = []
 
     def handle_endtag(self, tag: str) -> None:
-        if self._li_depth == 0:
-            return
         if tag == "li":
-            self._li_depth -= 1
-            if self._li_depth == 0:
-                self._flush()
-        elif tag == "h2" and self._in_h2:
+            if not self._li_stack:
+                return
+            if self._li_stack.pop():
+                self._algo_depth -= 1
+                if self._algo_depth == 0:
+                    self._flush()
+            return
+        if self._algo_depth != 1:
+            return
+        if tag == "h2" and self._in_h2:
             self._in_h2 = False
             if self._cur is not None:
                 self._cur["title"] = _join_text(self._buf)
@@ -167,12 +178,12 @@ class _BingSERPParser(HTMLParser):
             if self._cur is not None:
                 self._cur["snippet"] = _join_text(self._buf)
             self._buf = None
-
     def close(self) -> None:
         """Flush a result whose closing ``</li>`` never arrived (truncated SERP)."""
         super().close()
-        if self._li_depth:
-            self._li_depth = 0
+        if self._algo_depth:
+            self._algo_depth = 0
+            self._li_stack.clear()
             self._flush()
 
     def _flush(self) -> None:
@@ -198,7 +209,7 @@ class _BingSERPParser(HTMLParser):
             self._buf.append(data)
 
 
-def _bing_search_url(query: str, _max_results: int) -> str:
+def _bing_search_url(query: str) -> str:
     # No `count` param: live testing showed Bing serves stale/wrong cached
     # SERPs when `count` is present (basic and browser mode both), and correct
     # fresh results without it. Cap results client-side instead.
@@ -215,7 +226,7 @@ async def emulated_search(provider: BaseProvider, query: str, max_results: int) 
     results at ~10× the cost and ~30s latency. ``provider`` must be an enabled
     Scrappey provider; ``fetch`` errors propagate to the caller.
     """
-    page = await provider.fetch(_bing_search_url(query, max_results), format="html", js_render=True)
+    page = await provider.fetch(_bing_search_url(query), format="html", js_render=True)
     parser = _BingSERPParser()
     try:
         parser.feed(page.content or "")
@@ -245,9 +256,15 @@ def _extract_title(html_text: str) -> str | None:
 
 
 def _extract_links(html_text: str, base_url: str) -> list[str]:
-    """Harvest ``href`` values, resolved against ``base_url``, capped."""
+    """Harvest ``href`` values, resolved against ``base_url``, capped.
+
+    Script/style blocks and HTML comments are stripped first: a link-shaped
+    string inside a script literal or a commented-out block is not a real
+    link, and following it would bill a pointless provider request.
+    """
+    cleaned = _COMMENT_RE.sub(" ", _strip_blocks(html_text))
     links: list[str] = []
-    for match in _HREF_RE.finditer(html_text):
+    for match in _HREF_RE.finditer(cleaned):
         href = match.group(1).strip()
         if not href or href.startswith(("#", "javascript:", "mailto:", "tel:")):
             continue
@@ -257,18 +274,24 @@ def _extract_links(html_text: str, base_url: str) -> list[str]:
     return links
 
 
+def _normalized_netloc(url: str) -> str:
+    """Dedupe/comparison host: lowercase, ``www.``-stripped, no trailing dot."""
+    netloc = urlparse(url).netloc.lower()
+    if netloc.startswith("www."):
+        netloc = netloc[4:]
+    return netloc.rstrip(".")
+
+
 def _crawl_key(url: str) -> str:
     """Dedupe identity: scheme + www-stripped host + path + query, no fragment."""
-    scheme, netloc, path, _, query, _ = urlparse(urldefrag(url)[0])
-    if netloc.lower().startswith("www."):
-        netloc = netloc[4:]
-    return f"{scheme.lower()}://{netloc.lower()}{path or '/'}{'?' + query if query else ''}"
+    scheme, _, path, _, query, _ = urlparse(urldefrag(url)[0])
+    host = _normalized_netloc(url)
+    return f"{scheme.lower()}://{host}{path or '/'}{'?' + query if query else ''}"
 
 
 def _same_host(a: str, b: str) -> bool:
-    host_a = urlparse(a).netloc.lower()
-    host_b = urlparse(b).netloc.lower()
-    return host_a == host_b
+    """Same site, ignoring scheme and a leading ``www.`` (both are common)."""
+    return _normalized_netloc(a) == _normalized_netloc(b)
 
 
 def _is_skippable(url: str) -> bool:
@@ -279,27 +302,36 @@ def _is_skippable(url: str) -> bool:
 
 async def emulated_crawl(
     provider: BaseProvider, start_url: str, max_pages: int, max_depth: int
-) -> list[CrawlPage]:
+) -> CrawlOutcome:
     """Emulated crawl: breadth-first walk of same-host pages, basic mode.
 
     One basic-mode ``fetch`` per page (so up to ``max_pages`` billed
-    requests). A page ``fetch``/parse error propagates and aborts the crawl
-    — no partial results are returned.
+    requests). A failure on the start page aborts (there is nothing to
+    report); later page failures are recorded in ``CrawlOutcome.failures``
+    and the walk continues, so one dead link does not discard the pages
+    already fetched (and billed).
     """
     if _is_skippable(start_url):
         raise ProviderError(f"crawl start URL looks like a file, not a page: {start_url}")
-    pages: list[CrawlPage] = []
+    outcome = CrawlOutcome()
     seen: set[str] = set()
     queue: deque[tuple[str, int]] = deque([(start_url, 0)])
-    while queue and len(pages) < max_pages:
+    while queue and len(outcome.pages) < max_pages:
         url, depth = queue.popleft()
         key = _crawl_key(url)
         if key in seen:
             continue
         seen.add(key)
-        fetched = await provider.fetch(url, format="html", js_render=False)
+        try:
+            fetched = await provider.fetch(url, format="html", js_render=False)
+        except (ProviderError, httpx.HTTPError) as exc:
+            if not outcome.pages:
+                raise
+            logger.warning("crawl page %s failed: %s", url, exc)
+            outcome.failures.append(CrawlFailure(url=url, error=str(exc)))
+            continue
         content = fetched.content or ""
-        pages.append(
+        outcome.pages.append(
             CrawlPage(url=fetched.url or url, title=_extract_title(content), content=content)
         )
         if depth >= max_depth:
@@ -311,63 +343,22 @@ async def emulated_crawl(
             if link_key in seen or not _same_host(start_url, link):
                 continue
             queue.append((link, depth + 1))
-    return pages
+    return outcome
 
 
-def _strip_blocks(html_text: str) -> str:
-    """Drop block elements together with their content, in one linear pass.
-
-    Equivalent to ``re.sub(r"<(tag)[^>]*>.*?</\\1>", " ", html_text)`` (first
-    closer wins, case-insensitive) — including the single space left behind —
-    but without the quadratic rescan that pattern performs on input with many
-    unterminated openers: one hostile page must not stall the event loop.
-    """
-    closes: dict[str, list[int]] = {}
-    for match in _BLOCK_CLOSE_RE.finditer(html_text):
-        closes.setdefault(match.group(1).lower(), []).append(match.start())
-    if not closes:
-        return html_text
-    kept: list[str] = []
-    consumed_until = 0
-    for match in _BLOCK_OPEN_RE.finditer(html_text):
-        if match.start() < consumed_until:
-            continue  # inside a block already dropped
-        starts = closes.get(match.group(1).lower())
-        if not starts:
-            continue
-        index = bisect_left(starts, match.end())
-        if index == len(starts):
-            continue
-        kept.append(html_text[consumed_until : match.start()])
-        kept.append(" ")
-        consumed_until = starts[index] + len(match.group(1)) + 3  # "</" + tag + ">"
-    if consumed_until == 0:
-        return html_text
-    kept.append(html_text[consumed_until:])
-    return "".join(kept)
-
-
-def _html_to_text(html_text: str) -> str:
-    """Strip page HTML to readable text: drop script/style/chrome blocks and
-    tags, remove stray raw angle brackets (e.g. ``1 < 2`` in text content),
-    unescape entities, collapse whitespace. Entity-encoded brackets
-    (``&lt;``/``&gt;``) are decoded after the raw ones are removed."""
-    without_blocks = _strip_blocks(html_text)
-    without_tags = _TAG_RE.sub(" ", without_blocks)
-    without_brackets = re.sub(r"[<>]", " ", without_tags)
-    return _clean_text(_html.unescape(without_brackets))
 
 
 def _llm_max_chars() -> int:
     raw = os.environ.get("EXTRACT_MAX_CHARS")
-    if raw:
-        try:
-            value = int(raw)
-            if value > 0:
-                return value
-        except ValueError:
-            pass
-    return _DEFAULT_MAX_EXTRACT_CHARS
+    if not raw:
+        return _DEFAULT_MAX_EXTRACT_CHARS
+    try:
+        value = int(raw)
+    except ValueError:
+        raise ValueError(f"EXTRACT_MAX_CHARS must be a positive integer, got {raw!r}") from None
+    if value <= 0:
+        raise ValueError(f"EXTRACT_MAX_CHARS must be a positive integer, got {raw!r}")
+    return value
 
 
 async def emulated_extract(
@@ -439,9 +430,9 @@ def extract_explanation(
         "how": how + (f" with extraction focus {prompt!r}" if prompt else ""),
         "drawbacks": drawbacks,
         "trigger": (
-            're-call web_extract with an additional "force": true argument to execute '
-            "the emulated path; the flag is intentionally absent from the tool schema "
-            "and is only accepted on this follow-up call"
+            're-call web_extract with "force": true to execute the emulated path. '
+            "force is an optional boolean parameter on this tool; without it the call "
+            "only explains what would happen."
         ),
     }
     return {"error": (
@@ -485,9 +476,9 @@ def search_explanation(
                 "page by default)",
             ],
             "trigger": (
-                're-call web_search with an additional "force": true argument to execute '
-                "the emulated path; the flag is intentionally absent from the tool schema "
-                "and is only accepted on this follow-up call"
+                're-call web_search with "force": true to execute the emulated path. '
+                "force is an optional boolean parameter on this tool; without it the call "
+                "only explains what would happen."
             ),
         },
     }
@@ -518,12 +509,14 @@ def crawl_explanation(url: str, max_pages: int, max_depth: int) -> dict:
                 "content is raw HTML, not markdown",
                 "link discovery is best-effort over page HTML: JS-injected links and "
                 "sitemap-only pages are missed",
-                "any page fetch error aborts the crawl — no partial results are returned",
+                "a page that fails to fetch is reported in 'failures' and skipped; the "
+                "crawl continues with the pages already fetched (the start page failure "
+                "aborts, since there is nothing to report)",
             ],
             "trigger": (
-                're-call web_crawl with an additional "force": true argument to execute '
-                "the emulated path; the flag is intentionally absent from the tool schema "
-                "and is only accepted on this follow-up call"
+                're-call web_crawl with "force": true to execute the emulated path. '
+                "force is an optional boolean parameter on this tool; without it the call "
+                "only explains what would happen."
             ),
         },
     }

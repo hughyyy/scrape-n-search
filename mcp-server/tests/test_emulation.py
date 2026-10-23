@@ -9,10 +9,9 @@ import time
 from urllib.parse import urlparse
 
 import pytest
-
 from scrape_n_search.emulation import (
-    _BingSERPParser,
     _MAX_LINKS_PER_PAGE,
+    _BingSERPParser,
     _crawl_key,
     _extract_links,
     _extract_title,
@@ -223,17 +222,24 @@ def test_bing_parser_skips_empty_titles():
     assert parser.results == []
 
 
-def test_bing_parser_nested_li_no_crash():
+def test_bing_parser_nested_li_keeps_outer_result():
     html = (
         '<ol id="b_results"><li class="b_algo">'
         '<h2><a href="https://example.com/a">Outer</a></h2>'
-        "<li class='b_algo'><h2><a href='https://example.com/b'>Inner</a></h2><p>i</p></li>"
-        "<p>snippet</p></li></ol>"
+        "<ul><li>deep link one</li><li>deep link two</li></ul>"
+        "<p>outer snippet</p></li>"
+        '<li class="b_algo"><h2><a href="https://example.com/b">Second</a></h2>'
+        "<p>second snippet</p></li></ol>"
     )
     parser = _BingSERPParser()
     parser.feed(html)
-    # best-effort: nested/malformed markup must never raise
-    assert isinstance(parser.results, list)
+    parser.close()
+    # a plain nested <li> must not end the surrounding b_algo result
+    assert [(r.title, r.url) for r in parser.results] == [
+        ("Outer", "https://example.com/a"),
+        ("Second", "https://example.com/b"),
+    ]
+    assert parser.results[0].snippet == "outer snippet"
 
 
 def test_bing_parser_takes_first_snippet_only():
@@ -608,13 +614,11 @@ def test_llm_max_chars_default_and_env(monkeypatch):
     with monkeypatch.context() as m:
         m.setenv("EXTRACT_MAX_CHARS", " 7000 ")
         assert _llm_max_chars() == 7000
-    with monkeypatch.context() as m:
-        m.setenv("EXTRACT_MAX_CHARS", "bogus")
-        assert _llm_max_chars() == 100_000
-    for bad in ("0", "-10", "0.5"):
+    for bad in ("bogus", "0", "-10", "0.5"):
         with monkeypatch.context() as m:
             m.setenv("EXTRACT_MAX_CHARS", bad)
-            assert _llm_max_chars() == 100_000
+            with pytest.raises(ValueError, match="EXTRACT_MAX_CHARS"):
+                _llm_max_chars()
 
 
 def test_extract_explanation_shape():
@@ -683,7 +687,7 @@ def test_crawl_explanation_echoes_bounds_and_cost():
     assert "25 pages" in emu["how"] and "depth ≤ 3" in emu["how"]
     assert "€0.10/1K" in emu["how"]
     assert any("max_pages × basic-mode" in d for d in emu["drawbacks"])
-    assert any("no partial results" in d for d in emu["drawbacks"])
+    assert any("reported in 'failures'" in d for d in emu["drawbacks"])
     assert any("raw HTML" in d for d in emu["drawbacks"])
 
 
@@ -786,7 +790,7 @@ async def test_emulated_crawl_random_graph_invariants():
             else:
                 links.append("https://example.com/logo.png")      # asset
         html = "<html><head><title>T</title></head><body>" + "".join(
-            f'<a href="{l}">{l}</a>' for l in links
+            f'<a href="{link}">{link}</a>' for link in links
         ) + "</body></html>"
         pages[url] = html
     provider = StubProvider(pages)
@@ -806,19 +810,36 @@ def test_bing_parser_defensive_guards_under_corrupt_state():
     # h2/p end tags can reference no in-flight result when internal state is
     # inconsistent (malicious/malformed input); the guards must hold, not crash
     parser = _BingSERPParser()
-    parser._li_depth = 1
+    parser._algo_depth = 1
+    parser._li_stack = [True]
     parser._in_h2 = True
     parser._cur = None
     parser._buf = None
     parser.feed("</h2>")  # h2 close with no result context
     assert parser.results == []
 
-    parser._li_depth = 1
+    parser._algo_depth = 1
+    parser._li_stack = [True]
     parser._in_p = True
     parser._cur = None
     parser._buf = None
     parser.feed("</p>")  # p close with no result context
     assert parser.results == []
+
+
+def test_bing_parser_nested_b_algo_depth():
+    # nested b_algo openers must not start a second result until the outer one
+    # closes; the depth counter drives both the start and end paths
+    html = (
+        '<li class="b_algo"><h2><a href="https://e/a">A</a></h2>'
+        '<li class="b_algo"><h2><a href="https://e/b">B</a></h2></li>'
+        "<p>outer snippet</p></li>"
+    )
+    parser = _BingSERPParser()
+    parser.feed(html)
+    parser.close()
+    assert [(r.title, r.url) for r in parser.results] == [("A", "https://e/a")]
+    assert parser.results[0].snippet == "outer snippet"
 
 
 # --- truncated SERP handling --------------------------------------------
@@ -926,7 +947,7 @@ def test_strip_blocks_equivalent_to_reference_regex():
     # the linear scanner must match the documented regex semantics exactly,
     # including the single space left where a block was removed
     reference = re.compile(
-        r"<(script|style|noscript|template|svg|iframe|head)[^>]*>.*?</\1>",
+        r"<(script|style|noscript|template|svg|iframe|head)[^>]*>.*?</\1\s*>",
         re.IGNORECASE | re.DOTALL,
     )
     tokens = [
@@ -1073,11 +1094,13 @@ def test_bing_parser_flush_without_result_is_guarded():
     # inconsistent internal state (depth says "in result", no result buffered)
     # must not crash the flush path
     parser = _BingSERPParser()
-    parser._li_depth = 1
+    parser._algo_depth = 1
+    parser._li_stack = [True]
     parser._cur = None
     parser.feed("</li>")
     assert parser.results == []
-    parser._li_depth = 1
+    parser._algo_depth = 1
+    parser._li_stack = [True]
     parser.close()
     assert parser.results == []
 
@@ -1112,3 +1135,75 @@ async def test_emulated_crawl_never_fetches_beyond_max_depth():
         "https://example.com/",
         "https://example.com/l1",
     ]
+
+
+def test_strip_blocks_accepts_whitespace_in_end_tag():
+    assert _html_to_text("<script>alert(1)</script >visible") == "visible"
+    assert _html_to_text("<style>DROP</STYLE\n><p>keep</p>") == "keep"
+    assert _html_to_text("<head>DROP</HEAD\t><p>keep</p>") == "keep"
+
+
+async def test_emulated_crawl_partial_failures_are_reported():
+    class FlakyProvider(StubProvider):
+        async def fetch(self, url: str, **kw) -> FetchedPage:
+            self.calls.append((url, dict(kw)))
+            if url.endswith("/broken"):
+                raise ProviderError("page 500")
+            return FetchedPage(url=url, content=self.pages[url], title=None)
+
+    provider = FlakyProvider(
+        {
+            "https://example.com/": '<a href="/ok">ok</a><a href="/broken">broken</a>',
+            "https://example.com/ok": "<p>fine</p>",
+        }
+    )
+    outcome = await emulated_crawl(provider, "https://example.com/", max_pages=10, max_depth=2)
+    assert [p.url for p in outcome.pages] == ["https://example.com/", "https://example.com/ok"]
+    assert [f.url for f in outcome.failures] == ["https://example.com/broken"]
+    assert "page 500" in outcome.failures[0].error
+    assert len(outcome) == 2  # iterable/sized over pages
+
+
+async def test_emulated_crawl_start_failure_still_aborts():
+    class DownProvider(StubProvider):
+        async def fetch(self, url: str, **kw) -> FetchedPage:
+            self.calls.append((url, dict(kw)))
+            raise ProviderError("start down")
+
+    with pytest.raises(ProviderError, match="start down"):
+        await emulated_crawl(DownProvider({}), "https://example.com/", max_pages=5, max_depth=2)
+
+
+async def test_emulated_crawl_follows_apex_and_www_variants():
+    provider = StubProvider(
+        {
+            "https://example.com/": '<a href="https://www.example.com/about">www link</a>',
+            "https://www.example.com/about": '<a href="https://example.com/contact">apex link</a>',
+            "https://example.com/contact": "<p>done</p>",
+        }
+    )
+    outcome = await emulated_crawl(provider, "https://example.com/", max_pages=10, max_depth=3)
+    assert [p.url for p in outcome.pages] == [
+        "https://example.com/",
+        "https://www.example.com/about",
+        "https://example.com/contact",
+    ]
+
+
+async def test_emulated_crawl_ignores_links_in_scripts_and_comments():
+    provider = StubProvider(
+        {
+            "https://example.com/": (
+                "<!-- <a href='/commented'>x</a> -->"
+                "<script>var s = '<a href=\"/scripted\">y</a>';</script>"
+                '<a href="/real">real</a>'
+            ),
+            "https://example.com/real": "<p>ok</p>",
+        }
+    )
+    outcome = await emulated_crawl(provider, "https://example.com/", max_pages=10, max_depth=1)
+    assert [url for url, _ in provider.calls] == [
+        "https://example.com/",
+        "https://example.com/real",
+    ]
+    assert len(outcome.pages) == 2

@@ -11,6 +11,7 @@ from __future__ import annotations
 import httpx
 
 from ..errors import ProviderError
+from ..htmltext import html_to_text
 from ..models import BrowserActionsResult, FetchedPage
 from .base import BaseProvider
 
@@ -20,6 +21,7 @@ BASE = "https://publisher.scrappey.com/api/v1"
 class ScrappeyProvider(BaseProvider):
     name = "scrappey"
     capabilities = frozenset({"fetch", "browser_actions", "screenshot", "session"})
+    fetch_formats = frozenset({"markdown", "html"})
 
     def __init__(self, api_key: str | None, client: httpx.AsyncClient | None = None):
         super().__init__(client)
@@ -46,7 +48,8 @@ class ScrappeyProvider(BaseProvider):
         # "browser" renders JS and can convert to markdown (€1/1K);
         # "request" is direct HTTP with no rendering, returns raw HTML (€0.10/1K).
         # Markdown conversion is a browser-only feature, so basic mode never
-        # requests it and returns the raw response instead.
+        # requests it; a markdown request is honored locally below by reducing
+        # the raw HTML to readable text.
         body["requestType"] = "browser" if browser else "request"
         if browser and want_markdown:
             body["markdown"] = True
@@ -68,10 +71,11 @@ class ScrappeyProvider(BaseProvider):
             )
             out_format = "markdown"
         else:
-            content = self._text(
+            raw = self._text(
                 solution.get("response") or solution.get("innerText"), "response"
             )
-            out_format = "html"
+            content = html_to_text(raw) if want_markdown else raw
+            out_format = "markdown" if want_markdown else "html"
         return FetchedPage(
             url=self._text(solution.get("currentUrl"), "currentUrl") or url,
             content=content,

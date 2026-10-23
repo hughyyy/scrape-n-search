@@ -40,9 +40,12 @@ def test_to_dict_list_field_passthrough():
     assert d["javascript_return"] == ["a", "b"]
 
 
-def test_to_dict_scalar_and_dict_identity():
+def test_to_dict_converts_dicts_recursively():
+    nested = {"outer": [SearchResult(title="A", url="https://a")], "n": None}
+    assert to_dict(nested) == {
+        "outer": [{"title": "A", "url": "https://a", "snippet": ""}],
+        "n": None,
+    }
     assert to_dict("plain") == "plain"
     assert to_dict(42) == 42
     assert to_dict(None) is None
-    obj = {"a": 1}
-    assert to_dict(obj) is obj

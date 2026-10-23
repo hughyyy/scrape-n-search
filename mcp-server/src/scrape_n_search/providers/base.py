@@ -19,6 +19,12 @@ DEFAULT_TIMEOUT = httpx.Timeout(60.0, connect=15.0)
 class BaseProvider:
     name: str = ""
     capabilities: frozenset[str] = frozenset()
+    # Formats this provider can actually produce from fetch(). Override with a
+    # narrower set when the API only returns one shape (e.g. plain text).
+    fetch_formats: frozenset[str] = frozenset({"markdown", "html"})
+
+    def supports_fetch_format(self, format: str) -> bool:
+        return format in self.fetch_formats
 
     def __init__(self, client: httpx.AsyncClient | None = None):
         self._client = client or httpx.AsyncClient(timeout=DEFAULT_TIMEOUT)
@@ -53,7 +59,7 @@ class BaseProvider:
         self._require("extract")
         raise ProviderError(f"provider '{self.name}' extract not implemented")
 
-    async def session(self, op: str, session: str = "", **kw):
+    async def session(self, op: str, session: str, **kw):
         self._require("session")
         raise ProviderError(f"provider '{self.name}' session not implemented")
 

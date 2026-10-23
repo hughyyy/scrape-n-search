@@ -24,11 +24,8 @@ fi
 # Author sets this at the top of the stages section.
 TOTAL_STAGES=0
 
-_STAGE_INDEX=0
 ENV_FILE="${ENV_FILE:-.env}"
 WRITTEN_ENV=()    # KEYs written to ENV_FILE this run
-WRITTEN_SECRET=() # secret NAMEs set this run
-SKIPPED=()        # things we couldn't do (e.g. gh missing)
 
 # _clear — wipe the terminal so only the current step is on screen. No-op when
 # output isn't a terminal, so piped logs stay readable.
@@ -48,14 +45,6 @@ banner() {
   pause "Ready to start?"
 }
 
-# stage "Name" — clear the screen, then announce a stage and show progress.
-# Clearing keeps only the current step on screen.
-stage() {
-  _clear
-  _STAGE_INDEX=$((_STAGE_INDEX + 1))
-  printf '\n%s%s▸ Stage %s/%s · %s%s\n' \
-    "$BOLD" "$BLUE" "$_STAGE_INDEX" "$TOTAL_STAGES" "$1" "$RESET"
-}
 
 # say "..." — a plain instruction line.
 say()  { printf '  %s\n' "$1"; }
@@ -140,44 +129,12 @@ write_env() {
   printf '  %s✓ wrote%s %s → %s\n' "$GREEN" "$RESET" "$key" "$ENV_FILE"
 }
 
-# set_secret NAME VALUE — set a GitHub Actions repo secret via gh. Falls back
-# to a warning (and records it) if gh is unavailable or unauthenticated.
-set_secret() {
-  local name="$1" value="$2"
-  if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
-    if printf '%s' "$value" | gh secret set "$name" >/dev/null 2>&1; then
-      WRITTEN_SECRET+=("$name")
-      printf '  %s✓ set%s GitHub secret %s\n' "$GREEN" "$RESET" "$name"
-      return
-    fi
-  fi
-  SKIPPED+=("GitHub secret $name (set it manually: gh secret set $name)")
-  warn "skipped GitHub secret $name — gh not ready; set it later"
-}
-
-# set_var NAME VALUE — set a GitHub Actions repo variable (non-secret).
-set_var() {
-  local name="$1" value="$2"
-  if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
-    if gh variable set "$name" --body "$value" >/dev/null 2>&1; then
-      printf '  %s✓ set%s GitHub variable %s\n' "$GREEN" "$RESET" "$name"
-      return
-    fi
-  fi
-  SKIPPED+=("GitHub variable $name")
-  warn "skipped GitHub variable $name — gh not ready; set it later"
-}
 
 # finish — clear, then a closing summary of everything configured.
 finish() {
   _clear
   printf '\n%s%s  ✓ Setup complete%s\n' "$BOLD" "$GREEN" "$RESET"
   (( ${#WRITTEN_ENV[@]} ))    && note "wrote ${#WRITTEN_ENV[@]} value(s) to $ENV_FILE: ${WRITTEN_ENV[*]}"
-  (( ${#WRITTEN_SECRET[@]} )) && note "set ${#WRITTEN_SECRET[@]} GitHub secret(s): ${WRITTEN_SECRET[*]}"
-  if (( ${#SKIPPED[@]} )); then
-    printf '\n'; warn "still to do by hand:"
-    for s in "${SKIPPED[@]}"; do note "  - $s"; done
-  fi
   printf '\n'
 }
 
@@ -271,11 +228,14 @@ prioritize() {
     printf '%s\n' "${PROVIDER_IDS[@]}" | grep -qx "$tok" || { warn "unknown provider: '$tok'"; ok=0; }
   done
   if (( ok )); then
-    write_env PROVIDER_PRIORITY "$PROVIDER_PRIORITY"
     first="${PROVIDER_PRIORITY%%,*}"
+    if ! printf '%s\n' "${ENABLED_PROVIDERS[@]}" | grep -qx "$first"; then
+      warn "DEFAULT_PROVIDER='$first' has no API key."
+      warn "Pick a configured provider first (${ENABLED_PROVIDERS[*]}) and retry."
+      return 1
+    fi
+    write_env PROVIDER_PRIORITY "$PROVIDER_PRIORITY"
     write_env DEFAULT_PROVIDER "$first"
-    printf '%s\n' "${ENABLED_PROVIDERS[@]}" | grep -qx "$first" || \
-      warn "DEFAULT_PROVIDER='$first' has no API key — the server will not start."
     return 0
   fi
   warn "Not writing PROVIDER_PRIORITY — remove unknown provider names and retry."
@@ -412,4 +372,4 @@ case $(configured_count) in
 esac
 
 finish
-printf '\n  %sRun the server:%s  .venv/bin/scrape-n-search\n\n' "$BOLD" "$RESET"
+printf '\n  %sRun the server:%s  python -m scrape_n_search (or the interpreter install.sh registered)\n\n' "$BOLD" "$RESET"

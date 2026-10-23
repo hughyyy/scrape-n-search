@@ -14,6 +14,9 @@ BASE = "https://api.firecrawl.dev/v2"
 
 _FRESHNESS_TBS = {"hour": "qdr:h", "day": "qdr:d", "week": "qdr:w", "month": "qdr:m", "year": "qdr:y"}
 
+# Floor for poll sleeps: a zero interval would otherwise busy-loop requests.
+_MIN_POLL_INTERVAL = 0.25
+
 
 class FirecrawlProvider(BaseProvider):
     name = "firecrawl"
@@ -68,10 +71,16 @@ class FirecrawlProvider(BaseProvider):
         data = await self._request_json("POST", f"{BASE}/scrape", json=body, headers=await self._headers())
         d = self._object(data, "data")
         content = self._text(d.get("markdown") or d.get("html"), "content")
+        # v2 nests page metadata under data.metadata (title may be a list).
+        metadata = self._object(d, "metadata")
+        title = metadata.get("title")
+        if isinstance(title, list):
+            title = " ".join(str(part) for part in title)
+        final_url = metadata.get("url") or metadata.get("sourceURL")
         return FetchedPage(
-            url=self._text(d.get("url"), "url") or url,
+            url=self._text(final_url, "url") or url,
             content=content,
-            title=d.get("title"),
+            title=self._text(title, "title") or None,
             format=fmt,
         )
 
@@ -90,14 +99,12 @@ class FirecrawlProvider(BaseProvider):
         job_id = data.get("id")
         if not job_id:
             raise ProviderError(f"firecrawl crawl returned no job id: {data}")
-        elapsed = 0.0
         # Wall-clock deadline: accumulating elapsed by poll_interval would spin
-        # forever when the interval is zero.
+        # forever when the interval is zero; a floor also avoids hot-looping.
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
         while loop.time() < deadline:
-            await asyncio.sleep(max(poll_interval, 0))
-            elapsed += poll_interval
+            await asyncio.sleep(max(poll_interval, _MIN_POLL_INTERVAL))
             status = await self._request_json("GET", f"{BASE}/crawl/{job_id}", headers=await self._headers())
             state = status.get("status")
             if state == "completed":
@@ -115,9 +122,37 @@ class FirecrawlProvider(BaseProvider):
                 raise ProviderError(f"firecrawl crawl {state}: {status}")
         raise ProviderError("firecrawl crawl timed out")
 
-    async def extract(self, url: str, *, prompt: str | None = None, **kw):
+    async def extract(
+        self,
+        url: str,
+        *,
+        prompt: str | None = None,
+        poll_interval: float = 2.0,
+        timeout: float = 120.0,
+        **kw,
+    ):
         body: dict = {"urls": [url]}
         if prompt:
             body["prompt"] = prompt
-        data = await self._request_json("POST", f"{BASE}/extract", json=body, headers=await self._headers())
-        return data.get("data")
+        data = await self._request_json(
+            "POST", f"{BASE}/extract", json=body, headers=await self._headers()
+        )
+        job_id = data.get("id")
+        if not job_id:
+            # Synchronous/legacy deployments answer with the data inline.
+            return data.get("data")
+        # v2 extract is a job: submit returns an id and the data arrives via
+        # GET /extract/{id} once the status is "completed".
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        while loop.time() < deadline:
+            await asyncio.sleep(max(poll_interval, _MIN_POLL_INTERVAL))
+            status = await self._request_json(
+                "GET", f"{BASE}/extract/{job_id}", headers=await self._headers()
+            )
+            state = status.get("status")
+            if state == "completed":
+                return status.get("data")
+            if state in ("failed", "cancelled"):
+                raise ProviderError(f"firecrawl extract {state}: {status}")
+        raise ProviderError("firecrawl extract timed out")

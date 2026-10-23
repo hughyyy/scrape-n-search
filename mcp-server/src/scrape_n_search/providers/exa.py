@@ -14,6 +14,7 @@ BASE = "https://api.exa.ai"
 class ExaProvider(BaseProvider):
     name = "exa"
     capabilities = frozenset({"search", "fetch"})
+    fetch_formats = frozenset({"markdown"})
 
     def __init__(self, api_key: str | None, client: httpx.AsyncClient | None = None):
         super().__init__(client)

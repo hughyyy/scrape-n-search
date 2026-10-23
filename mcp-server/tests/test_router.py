@@ -7,7 +7,6 @@ import logging
 
 import httpx
 import pytest
-
 from scrape_n_search.errors import NoProviderAvailable, ProviderError
 from scrape_n_search.models import FetchedPage, SearchResult
 from scrape_n_search.providers.base import BaseProvider
@@ -97,14 +96,16 @@ async def test_failover_on_httpx_error():
     assert results[0].title == "ok"
 
 
-async def test_uncaught_exception_propagates_without_failover():
+async def test_unexpected_exception_fails_over_and_logs(caplog):
     class BoomProvider(FakeProvider):
         async def search(self, query: str, **kw):
-            raise RuntimeError("boom")
+            raise RuntimeError("adapter bug")
 
     router = make_router(BoomProvider("a", {"search"}), FakeProvider("b", {"search"}))
-    with pytest.raises(RuntimeError):
-        await router.run("search", query="q")
+    with caplog.at_level(logging.ERROR, logger="scrape_n_search.router"):
+        name, results = await router.run("search", query="q")
+    assert name == "b" and results[0].title == "b:q"
+    assert any("crashed 'search'" in r.message for r in caplog.records)
 
 
 async def test_no_provider_error_lists_enabled():
@@ -370,18 +371,16 @@ async def test_preferred_without_capability_and_no_alternatives():
         await router.run("fetch", preferred="a", url="https://x")
 
 
-async def test_concurrent_identical_fetches_safe():
+async def test_concurrent_identical_fetches_single_flight():
     provider = CountingProvider()
     router = Router([provider], cache_ttl=60)
     results = await asyncio.gather(*(router.run("fetch", url="https://x") for _ in range(5)))
     names = {name for name, _ in results}
     assert names == {"p"}
-    assert all(r.content for _, r in results)
-    # whichever raced, the cache ends consistent: a later call is a cache hit
+    # concurrent identical misses coalesce into one billed request
+    assert provider.calls == 1
     await router.run("fetch", url="https://x")
-    calls_after = provider.calls
-    await router.run("fetch", url="https://x")
-    assert provider.calls == calls_after
+    assert provider.calls == 1
 
 
 # --- priority hygiene ---------------------------------------------------
@@ -456,7 +455,6 @@ async def test_real_adapter_malformed_response_fails_over():
     # end-to-end: a provider answering 200 with a malformed body degrades to
     # the next candidate instead of crashing the tool call
     from conftest import make_client
-
     from scrape_n_search.providers.tavily import TavilyProvider
 
     malformed = TavilyProvider(
@@ -470,8 +468,6 @@ async def test_real_adapter_malformed_response_fails_over():
 
 async def test_real_adapter_non_json_response_fails_over():
     from conftest import make_client
-
-
     from scrape_n_search.providers.tavily import TavilyProvider
 
 
@@ -481,3 +477,142 @@ async def test_real_adapter_non_json_response_fails_over():
     router = Router([challenge, FakeProvider("ok", {"search"})], priority=["tavily", "ok"])
     name, _ = await router.run("search", query="q")
     assert name == "ok"
+
+
+# --- pinning and fetch-format selection ---------------------------------
+
+
+class FetchProvider(BaseProvider):
+    def __init__(
+        self,
+        name: str,
+        *,
+        fail: bool = False,
+        formats: tuple[str, ...] = ("markdown", "html"),
+    ):
+        super().__init__()
+        self.name = name
+        self.capabilities = frozenset({"fetch"})
+        self.fetch_formats = frozenset(formats)
+        self.fail = fail
+        self.calls = 0
+
+    async def fetch(self, url: str, **kw) -> FetchedPage:
+        self.calls += 1
+        if self.fail:
+            raise ProviderError(f"{self.name} down")
+        return FetchedPage(url=url, content=self.name)
+
+
+async def test_pin_does_not_fail_over():
+    a, b = FetchProvider("a", fail=True), FetchProvider("b")
+    router = Router([a, b])
+    with pytest.raises(NoProviderAvailable, match="all providers failed"):
+        await router.run("fetch", preferred="a", pin=True, url="https://x")
+    assert a.calls == 1 and b.calls == 0
+
+
+async def test_soft_preference_fails_over():
+    a, b = FetchProvider("a", fail=True), FetchProvider("b")
+    router = Router([a, b])
+    name, page = await router.run("fetch", preferred="a", url="https://x")
+    assert name == "b" and page.content == "b"
+
+
+async def test_fetch_format_skips_incapable_providers():
+    md = FetchProvider("md", formats=("markdown",))
+    both = FetchProvider("both")
+    router = Router([md, both])
+    name, page = await router.run("fetch", url="https://x", format="html")
+    assert name == "both" and page.content == "both"
+    assert md.calls == 0
+    with pytest.raises(NoProviderAvailable, match="with format 'html'"):
+        await router.run("fetch", preferred="md", url="https://x", format="html")
+
+
+async def test_fetch_format_without_any_capable_provider():
+    router = Router([FetchProvider("md", formats=("markdown",))])
+    with pytest.raises(
+        NoProviderAvailable,
+        match="no configured provider supports 'fetch' with format 'html'",
+    ):
+        await router.run("fetch", url="https://x", format="html")
+
+
+async def test_single_flight_leader_error_is_shared():
+    class SlowBoom(FetchProvider):
+        async def fetch(self, url: str, **kw) -> FetchedPage:
+            self.calls += 1
+            await asyncio.sleep(0.01)  # let the other callers register
+            raise ProviderError("boom down")
+
+    provider = SlowBoom("boom")
+    router = Router([provider], cache_ttl=60)
+    results = await asyncio.gather(
+        *(router.run("fetch", url="https://x") for _ in range(3)), return_exceptions=True
+    )
+    assert all(isinstance(r, NoProviderAvailable) for r in results)
+    assert provider.calls == 1
+
+
+async def test_single_flight_success_shares_one_result():
+    class Slow(BaseProvider):
+        name = "slow"
+        capabilities = frozenset({"fetch"})
+
+        def __init__(self):
+            super().__init__()
+            self.calls = 0
+
+        async def fetch(self, url: str, **kw) -> FetchedPage:
+            self.calls += 1
+            await asyncio.sleep(0.01)  # keep the request in flight
+            return FetchedPage(url=url, content="once")
+
+    provider = Slow()
+    router = Router([provider], cache_ttl=60)
+    results = await asyncio.gather(*(router.run("fetch", url="https://x") for _ in range(5)))
+    assert {page.content for _, page in results} == {"once"}
+    assert provider.calls == 1
+
+
+async def test_single_flight_replaces_cancelled_leader():
+    provider = FetchProvider("p")
+    router = Router([provider], cache_ttl=60)
+    key = router._cache_key("fetch", None, {"url": "https://x"})
+    event = asyncio.Event()
+    event.set()
+    router._inflight[key] = (event, {"error": asyncio.CancelledError()})
+    name, page = await router._dispatch_cached("fetch", [provider], {"url": "https://x"}, key)
+    assert name == "p" and page.content == "p"
+
+
+async def test_cancelled_provider_error_propagates():
+    class Cancelled(BaseProvider):
+        name = "cancelled"
+        capabilities = frozenset({"fetch"})
+
+        async def fetch(self, url: str, **kw) -> FetchedPage:
+            raise asyncio.CancelledError()
+
+    router = Router([Cancelled()])
+    with pytest.raises(asyncio.CancelledError):
+        await router.run("fetch", url="https://x")
+
+
+async def test_cancelled_leader_does_not_evict_newer_leader_slot():
+    provider = FetchProvider("p")
+    router = Router([provider], cache_ttl=60)
+    key = router._cache_key("fetch", None, {"url": "https://x"})
+    stale_event = asyncio.Event()
+    router._inflight[key] = (stale_event, {"error": asyncio.CancelledError()})
+    task = asyncio.create_task(
+        router._dispatch_cached("fetch", [provider], {"url": "https://x"}, key)
+    )
+    await asyncio.sleep(0)  # let the task observe the stale slot and wait
+    newer_event = asyncio.Event()
+    router._inflight[key] = (newer_event, {"result": ("newer", FetchedPage(url="u", content="win"))})
+    stale_event.set()
+    newer_event.set()
+    name, page = await task
+    assert name == "newer" and page.content == "win"

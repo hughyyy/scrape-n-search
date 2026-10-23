@@ -80,15 +80,17 @@ async def _server_session():
             yield session
 
 
-async def test_stdio_lists_every_tool_without_force_flags():
+async def test_stdio_lists_every_tool_with_force_on_emulated_tools():
     async with _server_session() as session:
         assert session.server_info.name == "scrape-n-search"
         tools = await session.list_tools()
         assert {t.name for t in tools.tools} == EXPECTED_TOOLS
-        for tool in tools.tools:
-            schema = tool.input_schema
-            assert "force" not in (schema.get("properties") or {}), tool.name
-            assert "force" not in (schema.get("required") or []), tool.name
+        schemas = {t.name: t.input_schema for t in tools.tools}
+        for name in ("web_search", "web_crawl", "web_extract"):
+            assert "force" in (schemas[name].get("properties") or {}), name
+            assert "force" not in (schemas[name].get("required") or []), name
+        for name in ("web_fetch", "web_browser_actions", "web_screenshot", "web_session"):
+            assert "force" not in (schemas[name].get("properties") or {}), name
 
 
 async def test_stdio_serves_playbook_resource():

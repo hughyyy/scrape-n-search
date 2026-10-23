@@ -49,6 +49,9 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]:-.}")" 2>/dev/null && pwd || true)"
 if [[ -n "$here" && -f "$here/mcp-server/pyproject.toml" ]]; then
   REPO="$here"
   echo "using local checkout: $REPO"
+  if [[ "$REF" != "main" ]]; then
+    echo "note: --ref $REF is ignored because a local checkout was found" >&2
+  fi
 else
   if [[ "$(cat "$DATA/.ref" 2>/dev/null || true)" != "$REF" || ! -f "$SRC/mcp-server/pyproject.toml" ]]; then
     echo "fetching scrape-n-search source (ref: $REF) into $SRC"
@@ -58,22 +61,41 @@ else
       tar_url="${SNR_TARBALL_URL:-https://codeload.github.com/hughyyy/scrape-n-search/tar.gz/refs/heads/$REF}"
     fi
     tmp="$(mktemp -d)"
-    curl -fsSL "$tar_url" | tar -xz -C "$tmp"
-    src_dir="$(find "$tmp" -maxdepth 1 -type d -name 'scrape-n-search*' | head -n 1)"
+    trap 'rm -rf "$tmp"' EXIT
+    tarball="$tmp/source.tar.gz"
+    curl -fsSL "$tar_url" -o "$tarball"
+    if [[ -n "${SNR_TARBALL_SHA256:-}" ]]; then
+      if command -v sha256sum >/dev/null 2>&1; then
+        actual="$(sha256sum "$tarball" | cut -d' ' -f1)"
+      elif command -v shasum >/dev/null 2>&1; then
+        actual="$(shasum -a 256 "$tarball" | cut -d' ' -f1)"
+      else
+        echo "SNR_TARBALL_SHA256 is set but no sha256 tool is available" >&2
+        exit 1
+      fi
+      if [[ "$actual" != "$SNR_TARBALL_SHA256" ]]; then
+        echo "tarball checksum mismatch: expected $SNR_TARBALL_SHA256, got $actual" >&2
+        exit 1
+      fi
+      echo "tarball sha256 verified"
+    else
+      echo "warning: no SNR_TARBALL_SHA256 set; the tarball is not checksum-verified" >&2
+    fi
+    tar -xzf "$tarball" -C "$tmp"
+    src_dir="$(find "$tmp" -mindepth 1 -maxdepth 1 -type d -name 'scrape-n-search*' -print -quit)"
     if [[ -z "$src_dir" || ! -f "$src_dir/mcp-server/pyproject.toml" ]]; then
       echo "downloaded tarball did not contain the scrape-n-search source" >&2
-      rm -rf "$tmp"
       exit 1
     fi
     rm -rf "$SRC"
     mkdir -p "$DATA"
     mv "$src_dir" "$SRC"
-    rm -rf "$tmp"
     echo "$REF" > "$DATA/.ref"
     cp "$SRC/mcp-server/.env.example" "$SRC/mcp-server/.env"
     echo "source ready; API keys go in $SRC/mcp-server/.env (or run $SRC/setup.sh)"
   fi
   REPO="$SRC"
+  echo "using downloaded source: $REPO (ref: $REF)"
 fi
 
 case "$MODE" in

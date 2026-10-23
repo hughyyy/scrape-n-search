@@ -17,17 +17,13 @@ unified agent tools.
 
 ## Current state (all verified)
 
-- **383 tests pass — 100% line AND 100% branch coverage** (`coverage run --branch`,
-  1137 statements / 390 branches; `coverage` is now a dev dependency so the claim
-  is reproducible from the committed `pyproject.toml`). Coverage was already
-  saturated, so the audits used curated mutation sweeps
-  (comparison/boolop/not/const/else-drop mutants across every module: **276
-  mutants, 0 survivors**) and direct behavioural probing. Round four had closed
-  the remaining decision arms (parser end-tag short-circuits, `_cur is None`
-  guards, Exa `search_type=""`, Scrappey-disabled default provider,
-  `ENABLED_TOOLS` block skipping, `_hide_force_flags` non-dict schemas) plus
-  seeded property fuzzing and a concurrent-fetch test. Live-verified earlier:
-  force extract through the real Scrappey + OpenRouter keys.
+- **424 tests pass — 100% line AND 100% branch coverage** (`coverage run` with the
+  committed `[tool.coverage]` config; 1307 statements / 452 branches). The suite now
+  also covers the round-seven defect fixes below.
+- Earlier audits used curated mutation sweeps (276 mutants, 0 survivors) and direct
+  behavioural probing; the current round fixed defects that 100% coverage could not
+  see (wrong vendor API shapes, unhandled exception classes, contract drift). CI now
+  enforces coverage, ruff, mypy, and shellcheck.
 - Registered with Oh My Pi on this machine: `~/.omp/agent/mcp.json` →
   `scrape-n-search` (stdio, `python -m scrape_n_search`, cwd=`mcp-server`, 120s timeout).
 - A real `SCRAPPEY_API_KEY` is set in `mcp-server/.env` (gitignored). `DEFAULT_PROVIDER=scrappey`
@@ -51,7 +47,63 @@ unified agent tools.
   search/crawl/extract + harness-key web_extract; commit subject "Dual-run emulated
   search/crawl/extract via Scrappey + LLM web_extract").
 
-## Round five — edge-case hardening (this session)
+
+## Round seven — audit-driven correctness pass (this session)
+
+An independent code + test-suite audit found defects that the 100% coverage suite
+could not see (tests encoding implementation assumptions, unhandled exception
+classes, vendor API drift). All were fixed, with regression tests:
+
+1. **`.env.example` bricked fresh installs.** It shipped an active
+   `DEFAULT_PROVIDER=scrappey`, so `install.sh`'s copied `.env` made the server
+   refuse to start unless Scrappey was configured. Commented out; boot tests added.
+2. **Emulated-path transport errors escaped as protocol failures.** `_dual_run`
+   caught only `ProviderError`; `httpx` errors from Scrappey raised out of the tool.
+   It now catches `(ProviderError, httpx.HTTPError)` and returns the JSON error
+   envelope.
+3. **Firecrawl `extract` never returned data.** v2 `/extract` is an async job
+   (`{success, id}` → poll `GET /extract/{id}`); the adapter read `data` from the
+   submit response. It now polls status (`completed/failed/cancelled/timeout`),
+   with a sync-response fallback. Firecrawl `fetch` also reads `data.metadata.title`
+   and `metadata.url` now (previously always `None`).
+4. **Crawl host/link hygiene.** `_same_host` now strips a leading `www.` (matching
+   `_crawl_key`), so apex↔www links are followed; link harvesting strips
+   `<script>`/`<style>` blocks and HTML comments so phantom links are not billed.
+5. **SERP parser markup bugs.** A plain nested `<li>` no longer ends the enclosing
+   `b_algo` result; nested `b_algo` content cannot overwrite the outer title.
+   `_strip_blocks` now accepts whitespace in end tags (`</script >`) and the
+   differential-test oracle was corrected (it previously mirrored the bug).
+6. **Typed router errors.** Caller errors (`UnknownProvider`, `ProviderDisabled`,
+   `UnsupportedCapability`, `UnknownTool`) vs environment errors
+   (`NoProviderConfigured`, `AllProvidersFailed`) are now exception classes; the
+   emulation gate classifies by type instead of substring-matching messages.
+7. **Explicit `provider=` now pins.** An explicit pin no longer fails over to a
+   different provider (and an explicit pin never falls through to emulation);
+   `DEFAULT_PROVIDER` remains a soft, capability-aware preference.
+8. **Key redaction.** `logging_utils.redact` masks `key=`, `apikey=`, `token=`, and
+   `Bearer …` in router messages, and `configure_logging` installs a filter on every
+   handler (covers `httpx` URL lines).
+9. **Installer hardening.** `load_config` raises `ConfigError` (clear message,
+   exit 1) instead of crashing; Codex TOML is detection-only; `list`/`unregister`
+   survive unreadable configs; unregister removes every registered location;
+   dead code removed.
+10. **Contracts.** Per-provider `fetch_formats` filtering (Exa/Tavily/Jina cannot
+    serve `html`); Scrappey basic mode reduces HTML to text for markdown requests;
+    Tavily maps `freshness="hour"` to `day`; `web_fetch(max_chars=…)`;
+    `web_screenshot(output="image")` returns native image content; emulated crawl
+    returns `failures` for per-page errors instead of discarding completed pages;
+    `EXTRACT_MAX_CHARS` invalid values fail at startup; the LLM prompt delimits page
+    content as untrusted data; the `force` flag is now a normal published parameter
+    (the SDK-internals schema mutation is gone); tool errors set MCP `isError`.
+11. **Resilience.** Single-flight fetch cache (concurrent identical misses bill
+    once), unexpected adapter exceptions fail over with a logged traceback,
+    `SCRAPE_N_SEARCH_ENV_DIR` overrides the `.env` fallback directory, the setup
+    wizard refuses to write a `DEFAULT_PROVIDER` without a key, and `install.sh`
+    supports `SNR_TARBALL_SHA256` and reports which ref/checkout it used.
+
+Version bumped to **0.2.0**; `pyproject.toml`/`__init__.py` are checked for drift.
+
+## Round five — edge-case hardening (earlier session)
 
 Line/branch coverage was already 100%, so "improve coverage" was treated as
 scenario and assertion strength: measure mutation score, probe behaviour
@@ -182,11 +234,11 @@ and empty-string API keys treated as unconfigured.
   (`llm.py`: `OPENROUTER_API_KEY` or `HF_TOKEN`, thinking requested off
   best-effort, `EXTRACT_MODEL`/`EXTRACT_MAX_CHARS` env) that reduces the page
   to clean Markdown. The first call **returns an
-  explanation** (mechanics + drawbacks) and does **not** execute; only a follow-up
-  call with a `force=true` argument runs it. The flag is deliberately **not in the
-  published schemas** — it is stripped post-registration from `tools/list`
-  (`_hide_force_flags` in server.py) and revealed only by the first-call
-  explanation. Real search/crawl/extract providers are always preferred when configured.
+  explanation** (mechanics + drawbacks) and does **not** execute; a follow-up
+  call with `force=true` runs it. (Round seven superseded the original hidden-flag
+  trick: `force` is now a normal published boolean on those three tools, and the
+  `_hide_force_flags` SDK-internals mutation is gone.) Real search/crawl/extract
+  providers are always preferred when configured.
   Live-verified (2026-10): gate + force through the real Scrappey API and the
   real harness OpenRouter key (example.com → clean markdown; thinking-off
   param accepted on first attempt).
@@ -211,9 +263,12 @@ and empty-string API keys treated as unconfigured.
 ```bash
 cd /mnt/shared/Source/scrape-n-search
 .venv/bin/python -m pytest mcp-server/tests -q   # tests
+.venv/bin/python -m coverage run -m pytest mcp-server/tests -q   # 100% gate
+.venv/bin/ruff check mcp-server/src mcp-server/tests scripts
+(cd mcp-server && ../.venv/bin/mypy)
 .venv/bin/scrape-n-search                         # stdio MCP server
 
-# any machine, one line:
+# any machine, one line (set SNR_TARBALL_SHA256 to verify the download):
 curl -fsSL https://raw.githubusercontent.com/hughyyy/scrape-n-search/main/install.sh | bash
 ```
 
@@ -221,10 +276,12 @@ Keys/config live in `mcp-server/.env` (auto-loaded; see `.env.example`).
 
 ## Key files
 
-- `mcp-server/src/scrape_n_search/server.py` — MCP tools + tool hiding/default provider
+- `mcp-server/src/scrape_n_search/server.py` — MCP tools, validation, error/`isError` envelope, default provider, force gate
 - `mcp-server/src/scrape_n_search/emulation.py` — Scrappey-emulated search/crawl/extract (Bing SERP parse, BFS crawl, fetch+LLM extract) + dual-run explanation payloads
-- `mcp-server/src/scrape_n_search/llm.py` — minimal OpenAI-compatible chat client for emulated extract (harness-key resolution, thinking-off best-effort)
-- `mcp-server/src/scrape_n_search/router.py` — selection, priority, failover, TTL cache
+- `mcp-server/src/scrape_n_search/htmltext.py` — shared HTML block stripping / text reduction (linear, `</tag >`-tolerant)
+- `mcp-server/src/scrape_n_search/llm.py` — minimal OpenAI-compatible chat client for emulated extract (harness-key resolution, thinking-off best-effort, untrusted-data framing)
+- `mcp-server/src/scrape_n_search/router.py` — selection, strict pin vs soft priority, typed errors, fetch-format filtering, single-flight TTL cache, failover
+- `mcp-server/src/scrape_n_search/logging_utils.py` — API-key/bearer-token redaction
 - `mcp-server/src/scrape_n_search/providers/` — 8 provider adapters (`base.py` + one per provider)
 - `mcp-server/src/scrape_n_search/__main__.py` — entrypoint + `.env` loading + logging
 - `mcp-server/docs/scrappey.md` — full Scrappey documentation
@@ -234,8 +291,9 @@ Keys/config live in `mcp-server/.env` (auto-loaded; see `.env.example`).
 ## Known issues / notes (from live testing)
 
 - **Scrappey basic mode returns raw HTML, not markdown** — markdown conversion is
-  browser-only (`js_render=True`). The provider now handles this correctly (never sends
-  `filter:["markdown"]` in basic mode).
+  browser-only (`js_render=True`). The provider never sends `filter:["markdown"]` in
+  basic mode; a markdown request is reduced from HTML to readable text locally (round
+  seven), while browser mode returns true markdown.
 - **`web_browser_actions` `javascript_return` requires `format="html"`** — the markdown
   filter (`filter:["markdown"]`) suppresses `execute_js` results. Documented in the
   playbook and tool description.
@@ -248,21 +306,21 @@ Keys/config live in `mcp-server/.env` (auto-loaded; see `.env.example`).
   cookies/localStorage state cannot be shared between calls yet. Documented in tool
   description + docs; check with the vendor before building on it.
 - **Jina search (`s.jina.ai`) now requires an API key** (401 without); keyless fetch
-  (`r.jina.ai`) still works.
-- **DuckDuckGo html endpoint challenges basic mode** (bot CAPTCHA); Bing works in basic mode.
+- **DuckDuckGo html endpoint challenges basic mode** (bot CAPTCHA). Bing pages fetch in
+  basic mode, but Bing *result pages* are unreliable there (stale cached SERPs) — use
+  browser mode for SERPs.
 - **Reddit**: new-reddit search returns spam/irrelevant results; `old.reddit.com` works
   well in browser mode.
 - **AliExpress**: search + item pages fetch fine in browser mode, but full product
   descriptions are lazy-loaded (not in initial HTML; the legacy description API 404s).
   Extracting descriptions may need Scrappey `browserActions` (click "View more") via the
   direct API — not exposed through the MCP `web_fetch` tool.
-- **Failover works**: when the preferred provider errors, the router silently fails over
-  (e.g. Scrappey → Jina). The response names the actual serving provider.
-- **httpx INFO logging leaks the Scrappey API key**: with default `LOG_LEVEL=INFO`,
-  httpx logs every request URL, and the Scrappey key rides in the query string
-  (`POST https://publisher.scrappey.com/api/v1?key=…`) — observed live. Key is
-  gitignored and only in `.env`, but the log line exposes it; consider filtering
-  httpx logs or `LOG_LEVEL=WARNING` on shared machines.
+- **Failover works**: when the preferred provider errors, the router fails over
+  (e.g. Scrappey → Jina). The response names the actual serving provider. An explicit
+  per-call `provider=` pin does **not** fail over (round seven).
+- **Key logging is redacted** (round seven): API keys ride in query strings
+  (`?key=` / `?apikey=`), so router messages and `httpx` URL lines are masked by
+  `logging_utils.RedactFilter` before any handler formats them. No action needed.
 - **Emulated search (live-verified 2026-10)**: Bing serves every organic result as a
   `/ck/a` click-tracking redirect — the server decodes the base64 `u=` param to the
   real destination URL. **Basic mode is unusable for search**: Bing served stale
@@ -270,19 +328,19 @@ Keys/config live in `mcp-server/.env` (auto-loaded; see `.env.example`).
   requests returned coherent but off-query results, identical across repeats), which
   is why emulated search uses full-browser mode (~30s, €1/1K). Results can include
   promoted entries and geo varies with the proxy; parsing is best-effort.
-- **Emulated crawl returns raw HTML** per page (basic mode); no JS rendering, and any
-  page error aborts the whole crawl (no partial results — by design, documented in the
-  call-time explanation).
+- **Emulated crawl returns raw HTML** per page (basic mode); no JS rendering. A page
+  that fails to fetch is reported in `failures` and skipped (round seven), so one dead
+  link no longer discards pages already fetched.
 
 ## Open items / next steps
 
-- **Releases/packaging**: done — MIT license, CI + release workflows, v0.1.0 +
-  v0.1.1 published, **PyPI live** (`scrape-n-search-mcp`, trusted publishing verified,
-  fresh-venv `pip install` + server boot checked; uvx not installed on this machine,
-  verify `uvx scrape-n-search-mcp` elsewhere). Future releases: bump
-  pyproject.toml + `__init__.py` `__version__` in one commit, then
-  `git tag vX.Y.Z && git push origin vX.Y.Z`. One-line installer
-  (`curl | bash`) live and pipe-safe (`--ref` pins tags).
+- **Releases/packaging**: MIT license, CI + release workflows, v0.1.0 + v0.1.1
+  published, **PyPI live** (`scrape-n-search-mcp`, trusted publishing verified).
+  The next release is **v0.2.0** (round seven; `pyproject.toml` + `__init__.py`
+  already bumped in this commit). Then
+  `git tag v0.2.0 && git push origin v0.2.0`. One-line installer
+  (`curl | bash`) live and pipe-safe (`--ref` pins tags, `SNR_TARBALL_SHA256`
+  verifies the tarball).
 - Cross-request session reuse (cookies/login state) is blocked by Scrappey's current
   request lifecycle — re-test when the vendor changes behavior.
 - Scrappey's own GPT-4 "AI extraction" direct-API feature is still not exposed via

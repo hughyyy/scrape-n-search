@@ -38,10 +38,43 @@ class CrawlPage:
     content: str | None = None
 
 
-def to_dict(obj: Any) -> dict[str, Any]:
-    """Recursively convert a dataclass tree to plain dicts."""
+@dataclass
+class CrawlFailure:
+    """A page the emulated crawl could not fetch (partial-result reporting)."""
+
+    url: str
+    error: str
+
+
+@dataclass
+class CrawlOutcome:
+    """Emulated crawl result: completed pages plus per-page failures.
+
+    Iterable/sized over ``pages`` for callers that only need the results;
+    ``failures`` carries the pages that could not be fetched.
+    """
+
+    pages: list[CrawlPage] = field(default_factory=list)
+    failures: list[CrawlFailure] = field(default_factory=list)
+
+    def __iter__(self):
+        return iter(self.pages)
+
+    def __len__(self) -> int:
+        return len(self.pages)
+
+
+def to_dict(obj: Any) -> Any:
+    """Recursively convert dataclasses (and containers) to plain JSON values.
+
+    ``None`` fields are omitted from dataclass output (the unified response
+    schema treats them as absent), while arbitrary dicts keep their keys
+    unchanged so provider payloads are not silently rewritten.
+    """
+    if isinstance(obj, dict):
+        return {key: to_dict(value) for key, value in obj.items()}
     if isinstance(obj, (list, tuple)):
-        return [to_dict(x) for x in obj]
+        return [to_dict(item) for item in obj]
     if hasattr(obj, "__dataclass_fields__"):
-        return {k: to_dict(v) for k, v in asdict(obj).items() if v is not None}
+        return {key: to_dict(value) for key, value in asdict(obj).items() if value is not None}
     return obj

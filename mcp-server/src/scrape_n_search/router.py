@@ -5,12 +5,27 @@ The router picks the first enabled provider that supports the requested tool
 candidate, aggregating errors. Callers get normalized results plus the name of
 the provider that actually served them.
 
+Selection semantics:
+
+- no ``preferred``: auto-select in priority order; fail over on error.
+- ``preferred`` with ``pin=False`` (the ``DEFAULT_PROVIDER`` case): try it
+  first, then the normal priority order — a soft preference.
+- ``preferred`` with ``pin=True`` (an explicit caller ``provider=`` argument):
+  that provider only. A caller pin is a cost/privacy decision, so silently
+  answering from another provider would be wrong; a failure surfaces instead.
+
+Fetch candidates are additionally filtered by the requested ``format`` so a
+provider that can only return plain text is never handed ``format="html"``.
+
 An optional TTL cache (``cache_ttl``) deduplicates identical ``fetch`` calls
-within a time window — agents re-reading the same page pay once.
+within a time window — agents re-reading the same page pay once. Concurrent
+identical misses share a single in-flight request (single-flight), so a burst
+of parallel tool calls bills the provider once.
 """
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
@@ -18,7 +33,16 @@ import time
 
 import httpx
 
-from .errors import NoProviderAvailable, ProviderError
+from .errors import (
+    AllProvidersFailed,
+    NoProviderConfigured,
+    ProviderDisabled,
+    ProviderError,
+    UnknownProvider,
+    UnknownTool,
+    UnsupportedCapability,
+)
+from .logging_utils import redact
 from .providers.base import BaseProvider
 
 logger = logging.getLogger(__name__)
@@ -42,6 +66,8 @@ class Router:
         self._cache_ttl = cache_ttl
         # tool -> {key: (expires_monotonic, provider_name, result)}
         self._cache: dict[str, dict[str, tuple[float, str, object]]] = {}
+        # cache key -> (event, holder) for in-flight fetch deduplication
+        self._inflight: dict[str, tuple[asyncio.Event, dict[str, object]]] = {}
         if priority:
             # Dedupe: a repeated name would otherwise be tried (and billed) twice.
             named = list(dict.fromkeys(n for n in priority if n in self._providers))
@@ -76,44 +102,65 @@ class Router:
             del entries[oldest]
         entries[key] = (time.monotonic() + self._cache_ttl, pname, result)
 
-    def available(self, tool: str) -> list[BaseProvider]:
-        """Enabled providers that support `tool`, in priority order."""
-        return [
-            self._providers[n]
-            for n in self._order
-            if n in self._providers and self._providers[n].enabled and tool in self._providers[n].capabilities
-        ]
+    def available(self, tool: str, fetch_format: str | None = None) -> list[BaseProvider]:
+        """Enabled providers that support `tool` (and fetch format), in priority order."""
+        out: list[BaseProvider] = []
+        for name in self._order:
+            prov = self._providers.get(name)
+            if prov is None or not prov.enabled or tool not in prov.capabilities:
+                continue
+            if fetch_format is not None and not prov.supports_fetch_format(fetch_format):
+                continue
+            out.append(prov)
+        return out
 
     def get(self, name: str) -> BaseProvider | None:
         """Look up a provider by name (enabled or not)."""
         return self._providers.get(name)
 
-    async def run(self, tool: str, preferred: str | None = None, **kwargs) -> tuple[str, object]:
+    async def run(
+        self,
+        tool: str,
+        preferred: str | None = None,
+        *,
+        pin: bool = False,
+        **kwargs,
+    ) -> tuple[str, object]:
         """Dispatch `tool` to the best provider.
 
         Returns ``(provider_name, result)`` so callers can attribute the
-        response. Fails over across candidates on error.
+        response. Fails over across candidates on error unless ``pin`` is set.
         """
         if tool not in TOOLS:
-            raise NoProviderAvailable(f"unknown tool '{tool}'")
-        candidates = self.available(tool)
+            raise UnknownTool(f"unknown tool '{tool}'")
+        fetch_format = kwargs.get("format") if tool == "fetch" else None
+        if not isinstance(fetch_format, str):
+            fetch_format = None
+        candidates = self.available(tool, fetch_format=fetch_format)
         if preferred:
             if preferred not in self._providers:
-                raise NoProviderAvailable(f"unknown provider '{preferred}'")
+                raise UnknownProvider(f"unknown provider '{preferred}'")
             prov = self._providers[preferred]
             if not prov.enabled:
-                raise NoProviderAvailable(f"provider '{preferred}' is not configured")
+                raise ProviderDisabled(f"provider '{preferred}' is not configured")
             if tool not in prov.capabilities:
-                raise NoProviderAvailable(f"provider '{preferred}' does not support '{tool}'")
-            candidates = [prov] + [p for p in candidates if p.name != preferred]
+                raise UnsupportedCapability(f"provider '{preferred}' does not support '{tool}'")
+            if fetch_format is not None and not prov.supports_fetch_format(fetch_format):
+                raise UnsupportedCapability(
+                    f"provider '{preferred}' does not support '{tool}' with format "
+                    f"'{fetch_format}'"
+                )
+            if pin:
+                candidates = [prov]
+            else:
+                candidates = [prov] + [p for p in candidates if p.name != preferred]
         if not candidates:
-            raise NoProviderAvailable(
-                f"no configured provider supports '{tool}' "
+            suffix = f" with format '{fetch_format}'" if fetch_format is not None else ""
+            raise NoProviderConfigured(
+                f"no configured provider supports '{tool}'{suffix} "
                 f"(enabled: {[p.name for p in self._providers.values() if p.enabled]})"
             )
 
-        # TTL cache: only identical fetch calls (same tool, preferred provider,
-        # and kwargs) are served from cache.
         cache_key = None
         if tool == "fetch" and self._cache_ttl > 0:
             cache_key = self._cache_key(tool, preferred, kwargs)
@@ -121,21 +168,79 @@ class Router:
             if hit is not None:
                 logger.debug("cache hit for '%s'", tool)
                 return hit
+        if cache_key is None:
+            return await self._dispatch(tool, candidates, kwargs, None)
+        return await self._dispatch_cached(tool, candidates, kwargs, cache_key)
 
+    async def _dispatch_cached(
+        self,
+        tool: str,
+        candidates: list[BaseProvider],
+        kwargs: dict,
+        cache_key: str,
+    ) -> tuple[str, object]:
+        """Run one fetch per cache key, sharing it with concurrent waiters."""
+        while True:
+            inflight = self._inflight.get(cache_key)
+            if inflight is None:
+                break
+            event, holder = inflight
+            await event.wait()
+            if "result" in holder:
+                return holder["result"]  # type: ignore[return-value]
+            if not isinstance(holder.get("error"), asyncio.CancelledError):
+                raise holder["error"]  # type: ignore[misc]
+            # The leader was cancelled: reclaim its stale slot (unless a newer
+            # leader already replaced it) and run this call as the new leader.
+            if self._inflight.get(cache_key) is inflight:
+                self._inflight.pop(cache_key, None)
+
+        event = asyncio.Event()
+        outcome_holder: dict[str, object] = {}
+        self._inflight[cache_key] = (event, outcome_holder)
+        try:
+            outcome = await self._dispatch(tool, candidates, kwargs, cache_key)
+            outcome_holder["result"] = outcome
+            return outcome
+        except BaseException as exc:
+            outcome_holder["error"] = exc
+            raise
+        finally:
+            self._inflight.pop(cache_key, None)
+            event.set()
+
+    async def _dispatch(
+        self,
+        tool: str,
+        candidates: list[BaseProvider],
+        kwargs: dict,
+        cache_key: str | None,
+    ) -> tuple[str, object]:
         errors: list[str] = []
         start = time.monotonic()
         for prov in candidates:
             try:
                 result = await getattr(prov, tool)(**kwargs)
-                if cache_key is not None:
-                    self._cache_put(tool, cache_key, prov.name, result)
-                logger.info("'%s' served by %s in %.1fs", tool, prov.name, time.monotonic() - start)
-                return prov.name, result
             except (ProviderError, httpx.HTTPError) as exc:
-                logger.warning("provider %s failed '%s': %s", prov.name, tool, exc)
-                errors.append(f"{prov.name}: {exc}")
+                message = redact(str(exc))
+                logger.warning("provider %s failed '%s': %s", prov.name, tool, message)
+                errors.append(f"{prov.name}: {message}")
+                continue
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                # A provider adapter must not take the whole call down: an
+                # unexpected parsing bug degrades to the next candidate. The
+                # traceback is logged so the adapter bug stays visible.
+                logger.exception("provider %s crashed '%s'", prov.name, tool)
+                errors.append(f"{prov.name}: {type(exc).__name__}: {redact(str(exc))}")
+                continue
+            if cache_key is not None:
+                self._cache_put(tool, cache_key, prov.name, result)
+            logger.info("'%s' served by %s in %.1fs", tool, prov.name, time.monotonic() - start)
+            return prov.name, result
         logger.error("'%s' failed on all providers", tool)
-        raise NoProviderAvailable(f"all providers failed for '{tool}': " + "; ".join(errors))
+        raise AllProvidersFailed(f"all providers failed for '{tool}': " + "; ".join(errors))
 
     async def aclose(self) -> None:
         for prov in self._providers.values():

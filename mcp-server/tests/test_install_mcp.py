@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 import sys
 from pathlib import Path
@@ -170,3 +171,76 @@ def test_candidate_paths_expand_repo_placeholder(tmp_path):
     paths = h.candidate_paths(repo, home=tmp_path / "home")
     assert paths[0] == repo / ".mcp.json"
     assert str(paths[1]).endswith("/.claude.json")
+
+
+# --- unreadable and non-JSON configs ---------------------------------------
+
+
+def test_load_config_rejects_malformed_json(tmp_path):
+    path = tmp_path / "config.json"
+    path.write_text('{"a": 1', encoding="utf-8")
+    with pytest.raises(install_mcp.ConfigError, match="cannot read"):
+        install_mcp.load_config(path)
+
+
+def test_load_config_rejects_non_object_root(tmp_path):
+    path = tmp_path / "config.json"
+    path.write_text("[1, 2]", encoding="utf-8")
+    with pytest.raises(install_mcp.ConfigError, match="unexpected config shape"):
+        install_mcp.load_config(path)
+
+
+def test_codex_toml_is_detection_only(tmp_path, harnesses):
+    home = tmp_path / "home"
+    (home / ".codex").mkdir(parents=True)
+    (home / ".codex" / "config.toml").write_text('[mcp_servers.x]\ncommand = "y"\n', encoding="utf-8")
+    assert install_mcp.registered_in(harnesses["codex"], tmp_path, home) is None
+
+
+def test_list_and_unregister_survive_codex_toml(tmp_path, harnesses, capsys):
+    home = tmp_path / "home"
+    (home / ".codex").mkdir(parents=True)
+    (home / ".codex" / "config.toml").write_text('[mcp_servers.x]\ncommand = "y"\n', encoding="utf-8")
+    assert install_mcp.cmd_list(argparse.Namespace(), tmp_path, home) == 0
+    assert install_mcp.cmd_unregister(
+        argparse.Namespace(harness=["codex"], dry_run=True), tmp_path, home
+    ) == 0
+    out = capsys.readouterr().out
+    assert "detection only" in out
+    assert "skipped" in out
+
+
+def test_register_skips_unreadable_config(tmp_path, harnesses, capsys):
+    home = tmp_path / "home"
+    (home / ".omp" / "agent").mkdir(parents=True)
+    target = home / ".omp" / "agent" / "mcp.json"
+    target.write_text("{not json", encoding="utf-8")
+    lines = install_mcp.register_harness(
+        harnesses["omp"], "/x/python", "/x/mcp-server", 1000, tmp_path, home
+    )
+    assert any("skipped" in line and "cannot read" in line for line in lines)
+    assert target.read_text(encoding="utf-8") == "{not json"  # untouched
+
+
+def test_unregister_removes_every_registered_location(tmp_path, harnesses):
+    home = tmp_path / "home"
+    repo = tmp_path / "repo"
+    project = repo / ".mcp.json"
+    user = home / ".claude.json"
+    entry = {"mcpServers": {install_mcp.SERVER_ID: {"command": "x"}, "other": {"command": "y"}}}
+    for path in (project, user):
+        _mk(path, entry)
+    lines = install_mcp.unregister_harness(harnesses["claude-code"], repo, home)
+    assert sum("removed" in line for line in lines) == 2
+    for path in (project, user):
+        data = json.loads(path.read_text(encoding="utf-8"))
+        assert install_mcp.SERVER_ID not in data["mcpServers"]
+        assert data["mcpServers"]["other"] == {"command": "y"}
+
+
+def test_main_returns_nonzero_on_config_error(monkeypatch):
+    def boom(args, repo, home):
+        raise install_mcp.ConfigError("bad config")
+
+    monkeypatch.setattr(install_mcp, "cmd_list", boom)
+    assert install_mcp.main(["list"]) == 1

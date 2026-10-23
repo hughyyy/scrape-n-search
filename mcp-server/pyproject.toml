@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "scrape-n-search-mcp"
-version = "0.1.1"
+version = "0.2.0"
 description = "MCP server unifying web-search and scraping providers behind a few agent tools"
 readme = "README.md"
 license = "MIT"
@@ -25,6 +25,7 @@ classifiers = [
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
   "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
   "Topic :: Internet :: WWW/HTTP",
 ]
 
@@ -34,7 +35,14 @@ Repository = "https://github.com/hughyyy/scrape-n-search"
 Documentation = "https://github.com/hughyyy/scrape-n-search/blob/main/README.md"
 
 [project.optional-dependencies]
-dev = ["pytest", "pytest-asyncio", "coverage"]
+dev = [
+  "pytest",
+  "pytest-asyncio",
+  "pytest-timeout",
+  "coverage[toml]",
+  "ruff",
+  "mypy",
+]
 
 [project.scripts]
 scrape-n-search = "scrape_n_search.__main__:main"
@@ -48,3 +56,27 @@ scrape_n_search = ["*.md"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+timeout = 120
+
+[tool.coverage.run]
+branch = true
+source = ["scrape_n_search"]
+
+[tool.coverage.report]
+show_missing = true
+fail_under = 100
+skip_covered = false
+
+[tool.ruff]
+target-version = "py310"
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.10"
+files = ["src/scrape_n_search"]
+ignore_missing_imports = true
+warn_unused_ignores = true

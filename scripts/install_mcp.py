@@ -28,11 +28,15 @@ import json
 import os
 import shutil
 import sys
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 SERVER_ID = "scrape-n-search"
 DEFAULT_TIMEOUT_MS = 120000
+
+
+class ConfigError(Exception):
+    """A harness config could not be read or written."""
 
 # container key per harness (VS Code differs; Codex is TOML/unsupported)
 CONTAINER = {"omp", "claude-desktop", "claude-code", "cursor", "vscode"}
@@ -157,11 +161,17 @@ def _claude_desktop_paths() -> list[str]:
 
 
 def load_config(path: Path) -> dict:
+    """Read a JSON harness config. Raises ConfigError on unreadable/invalid files."""
     if not path.exists():
         return {}
-    with open(path, "r", encoding="utf-8") as fh:
-        data = json.load(fh)
-    return data if isinstance(data, dict) else {}
+    try:
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ConfigError(f"cannot read {path}: {exc}") from exc
+    if not isinstance(data, dict):
+        raise ConfigError(f"unexpected config shape in {path}: expected a JSON object")
+    return data
 
 
 def backup(path: Path) -> Path | None:
@@ -173,12 +183,15 @@ def backup(path: Path) -> Path | None:
 
 
 def save_config(path: Path, data: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(path.name + ".tmp")
-    with open(tmp, "w", encoding="utf-8") as fh:
-        json.dump(data, fh, indent=2)
-        fh.write("\n")
-    os.replace(tmp, path)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name(path.name + ".tmp")
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(data, fh, indent=2)
+            fh.write("\n")
+        os.replace(tmp, path)
+    except OSError as exc:
+        raise ConfigError(f"cannot write {path}: {exc}") from exc
 
 
 def pick_target(h: Harness, repo: Path, home: Path | None = None) -> Path | None:
@@ -190,9 +203,17 @@ def pick_target(h: Harness, repo: Path, home: Path | None = None) -> Path | None
 
 
 def registered_in(h: Harness, repo: Path, home: Path | None = None) -> Path | None:
+    # Unsupported harnesses (e.g. Codex TOML) are detection-only: never parse.
+    if not h.supported:
+        return None
     for p in h.candidate_paths(repo, home):
-        if p.exists() and SERVER_ID in load_config(p).get(h.container, {}):
-            return p
+        if not p.exists():
+            continue
+        try:
+            if SERVER_ID in load_config(p).get(h.container, {}):
+                return p
+        except ConfigError:
+            continue
     return None
 
 
@@ -212,10 +233,12 @@ def register_harness(
     if target is None:
         out.append(f"  {h.id}: no config location available (none of the candidate dirs exist)")
         return out
-    data = load_config(target)
+    try:
+        data = load_config(target)
+    except ConfigError as exc:
+        out.append(f"  {h.id}: skipped — {exc}")
+        return out
     container = data.get(h.container)
-    if not isinstance(container, dict):
-        container = {}
     entry = h.entry(command, cwd, timeout_ms)
     new_container = dict(container)
     prev = new_container.get(SERVER_ID)
@@ -242,7 +265,7 @@ def register_harness(
     if bak:
         out.append(f"       backup: {bak}")
     if prev:
-        out.append(f"       replaced previous entry")
+        out.append("       replaced previous entry")
     return out
 
 
@@ -254,7 +277,11 @@ def unregister_harness(
     for target in h.candidate_paths(repo, home):
         if not target.exists():
             continue
-        data = load_config(target)
+        try:
+            data = load_config(target)
+        except ConfigError as exc:
+            out.append(f"  {h.id}: skipped {target} — {exc}")
+            continue
         container = data.get(h.container)
         if not isinstance(container, dict) or SERVER_ID not in container:
             continue
@@ -270,7 +297,6 @@ def unregister_harness(
             if bak:
                 out.append(f"       backup: {bak}")
         removed = True
-        break
     if not removed:
         out.append(f"  {h.id}: not registered")
     return out
@@ -302,6 +328,8 @@ def cmd_list(args: argparse.Namespace, repo: Path, home: Path | None) -> int:
         print(line)
         if reg:
             print(f"                    -> {reg}")
+        elif installed and not h.supported:
+            print("                    (detection only — config format not supported)")
     return 0
 
 
@@ -319,7 +347,6 @@ def cmd_register(args: argparse.Namespace, repo: Path, home: Path | None) -> int
     if not sel:
         print("no harnesses detected — pass --harness to register a specific one")
         return 0
-    changed = False
     for h in sel:
         if not h.supported:
             print(f"  {h.id}: {h.note} — skipped")
@@ -327,8 +354,6 @@ def cmd_register(args: argparse.Namespace, repo: Path, home: Path | None) -> int
         lines = register_harness(h, command, cwd, args.timeout_ms, repo, home, args.dry_run, args.ask)
         for ln in lines:
             print(ln)
-            if "[dry-run]" not in ln and "already registered" not in ln:
-                changed = True
     print("\nreload the affected harness (e.g. /mcp reload in OMP) to pick up the change.")
     return 0
 
@@ -336,6 +361,9 @@ def cmd_register(args: argparse.Namespace, repo: Path, home: Path | None) -> int
 def cmd_unregister(args: argparse.Namespace, repo: Path, home: Path | None) -> int:
     sel = _select(args.harness, make_harnesses(), repo, home)
     for h in sel:
+        if not h.supported:
+            print(f"  {h.id}: {h.note} — skipped")
+            continue
         for ln in unregister_harness(h, repo, home, args.dry_run):
             print(ln)
     return 0
@@ -370,7 +398,11 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     repo = Path(args.repo) if args.repo else repo_root()
     home = Path(args.home) if args.home else None
-    return args.fn(args, repo, home)
+    try:
+        return args.fn(args, repo, home)
+    except ConfigError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":

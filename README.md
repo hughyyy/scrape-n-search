@@ -145,21 +145,23 @@ Add the server to your MCP client's configuration (adjust paths to your checkout
 ## Configuration
 
 Configuration lives in `mcp-server/.env` (see `mcp-server/.env.example`). The server
-loads `.env` from its own project directory regardless of how it is launched, and
-existing environment variables take precedence.
+loads `.env` from its own project directory (override with `SCRAPE_N_SEARCH_ENV_DIR`)
+regardless of how it is launched, and existing environment variables take precedence.
+`.env.example` deliberately leaves `DEFAULT_PROVIDER` unset so a fresh install with any
+provider key boots.
 
 | Variable | Effect |
 | --- | --- |
 | `TINYFISH_API_KEY`, `TAVILY_API_KEY`, `EXA_API_KEY`, `ZENROWS_API_KEY`, `SCRAPPEY_API_KEY`, `FIRECRAWL_API_KEY`, `SERPER_API_KEY` | Enable the corresponding providers. |
 | `JINA_API_KEY` | Enables Jina search (fetch is keyless). |
 | `JINA_KEYLESS` | Set `0` to disable the keyless Jina fetch fallback (on by default). |
-| `DEFAULT_PROVIDER` | Provider used when a call omits `provider`. When set, tools that provider cannot serve are hidden from the client (except `web_search`/`web_crawl`/`web_extract`, which stay visible when an enabled Scrappey can emulate them — gated per call). |
+| `DEFAULT_PROVIDER` | Soft preference for calls that omit `provider`; must be configured (an unconfigured default is a startup error). Tools that provider cannot serve are hidden from the client, except `web_search`/`web_crawl`/`web_extract` (kept visible when an enabled Scrappey can emulate them; pass `force: true` to execute). An explicit per-call `provider` pins and never fails over. |
 | `ENABLED_TOOLS` | Explicit tool allow-list, e.g. `web_fetch,web_browser_actions,web_screenshot`. Overrides the set derived from `DEFAULT_PROVIDER`. |
 | `PROVIDER_PRIORITY` | Selection order for auto-picked providers (default: recommended stack order). |
 | `HTTP_TIMEOUT` | HTTP timeout in seconds for provider API calls (default 60, connect 15). Raise for long Scrappey browser sequences. |
 | `OPENROUTER_API_KEY` / `HF_TOKEN` | LLM key for the emulated `web_extract` (fetch + LLM summary). Read from the process env first (a harness can inject them via its mcp.json `env` block) or from `.env`. |
 | `EXTRACT_MODEL` | Model for the emulated extract call (defaults: OpenRouter `deepseek/deepseek-chat`, HuggingFace `deepseek-ai/DeepSeek-V4-Flash-0731`). |
-| `EXTRACT_MAX_CHARS` | Page text cap (chars) sent to the LLM per emulated extract (default 100000). |
+| `EXTRACT_MAX_CHARS` | Page text cap (chars) sent to the LLM per emulated extract (default 100000; invalid/non-positive values fail at startup). |
 | `CACHE_TTL` | TTL in seconds for cached `web_fetch` results (default 0 = off). Repeated identical fetches are served from the router cache instead of billing the provider. |
 | `LOG_LEVEL` | Log verbosity: `DEBUG`, `INFO` (default), `WARNING`, `ERROR`, `CRITICAL`. INFO logs which provider served each call; DEBUG adds cache hits. |
 
@@ -178,36 +180,41 @@ when `CACHE_TTL` is set).
 ```bash
 .venv/bin/python -m pytest mcp-server/tests -q
 
-# branch coverage must stay at 100%
-.venv/bin/python -m coverage run --branch --source=mcp-server/src/scrape_n_search \
-  -m pytest mcp-server/tests -q
+# branch coverage (100% enforced by [tool.coverage] in mcp-server/pyproject.toml)
+.venv/bin/python -m coverage run -m pytest mcp-server/tests -q
 .venv/bin/python -m coverage report -m
+
+# lint, types, shell
+.venv/bin/ruff check --config mcp-server/pyproject.toml mcp-server/src mcp-server/tests scripts
+(cd mcp-server && ../.venv/bin/mypy)
+shellcheck install.sh setup.sh
 ```
 
-Tests cover per-provider response normalisation, router selection/failover/TTL
-cache, argument validation, configuration (timeouts, cache, logging), the
-emulated search/crawl/extract paths (Bing SERP parsing including truncated
-responses, crawl BFS invariants, HTML-to-text stripping), and the MCP surface
-end-to-end — both over an in-memory transport and over a real stdio subprocess.
-Shape-invalid provider responses (non-JSON 200s, wrong-typed fields) are
-asserted to raise `ProviderError` and fail over rather than crash the call.
+Tests cover per-provider response normalisation against the documented API shapes,
+router selection/pinning/failover/TTL-cache/single-flight behaviour, argument
+validation, configuration (timeouts, cache, logging, redaction), the emulated
+search/crawl/extract paths (Bing SERP parsing including truncated/nested markup, crawl
+BFS invariants and partial failures, HTML-to-text stripping), the provider scripts
+(`install_mcp.py`, `check_keys.py`), and the MCP surface end-to-end — both over an
+in-memory transport and over a real stdio subprocess. Shape-invalid provider responses
+are asserted to raise `ProviderError` and fail over rather than crash the call.
 To add a provider, subclass `BaseProvider`
-(`mcp-server/src/scrape_n_search/providers/base.py`), register it in `build_providers`,
-and add a normalisation test.
+(`mcp-server/src/scrape_n_search/providers/base.py`), declare `fetch_formats`, register
+it in `build_providers`, and add a normalisation test.
 
 ## Releases & packaging
 
 **Status**: MIT-licensed; CI (`pytest` on push/PR) and an automated release workflow
 run from GitHub (`ci.yml`, `release.yml`). **Published on PyPI as
 [`scrape-n-search-mcp`](https://pypi.org/project/scrape-n-search-mcp/)** (trusted
-publishing, no tokens). Releases: `v0.1.0` (first GitHub release) → `v0.1.1` (first
-PyPI release, wheel + sdist). Distribution channels: PyPI (`uvx scrape-n-search-mcp`),
-the one-line setup (GitHub source), or a git checkout.
+publishing, no tokens). Releases: `v0.1.0` → `v0.1.1` (first PyPI release) →
+`v0.2.0` (audit-driven correctness pass; current). Distribution channels: PyPI
+(`uvx scrape-n-search-mcp`), the one-line setup (GitHub source), or a git checkout.
 
 **Release flow (fully automated from a tag)**:
 
 ```bash
-git tag v0.1.2 && git push origin v0.1.2
+git tag v0.2.0 && git push origin v0.2.0
 ```
 
 The `release` workflow then: runs the tests, builds sdist + wheel, creates a GitHub
@@ -215,7 +222,7 @@ Release with auto-generated notes and attaches the artifacts, and publishes to P
 via trusted publishing (OIDC — no token). Verify after each release on a clean
 machine: `uvx scrape-n-search-mcp` (or `pipx run scrape-n-search-mcp`), then register
 it with your MCP client. The one-line installer pins releases with
-`curl -fsSL <url> | bash -s -- --ref v0.1.2`.
+`curl -fsSL <url> | bash -s -- --ref v0.2.0`.
 
 **How MCP servers are usually distributed**: JavaScript servers ship via npm and are
 run with `npx -y <pkg>` (e.g. `npx -y firecrawl-mcp`); Python servers via PyPI under
