@@ -49,7 +49,11 @@ class ExaProvider(BaseProvider):
         data = await self._request_json("POST", f"{BASE}/search", json=body, headers=await self._headers())
         results = []
         for r in data.get("results", []):
-            snippet = r.get("text") or r.get("highlights") or ""
+            snippet = r.get("text") or ""
+            if not snippet and isinstance(r.get("highlights"), list):
+                # the Exa API returns highlights as a list; flatten to text so
+                # snippet keeps the unified string contract
+                snippet = " ".join(str(h) for h in r["highlights"])
             results.append(
                 SearchResult(
                     title=r.get("title", ""),

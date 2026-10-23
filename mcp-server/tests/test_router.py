@@ -294,3 +294,77 @@ async def test_router_logs_serve_and_failover(caplog):
     assert name == "b"
     assert any("'search' served by b" in record.message for record in caplog.records)
     assert any("provider a failed 'search'" in record.message for record in caplog.records)
+
+
+class FailingFetchProvider(BaseProvider):
+    name = "p"
+    capabilities = frozenset({"fetch"})
+
+    def __init__(self, fail: bool):
+        super().__init__()
+        self._fail = fail
+        self.calls = 0
+
+    async def fetch(self, url: str, **kw) -> FetchedPage:
+        self.calls += 1
+        if self._fail:
+            raise ProviderError("boom")
+        return FetchedPage(url=url, content="ok")
+
+
+class NamedFailingFetchProvider(FailingFetchProvider):
+    def __init__(self, name: str, fail: bool):
+        super().__init__(fail)
+        self.name = name
+
+
+async def test_failed_provider_result_never_cached():
+    failing = NamedFailingFetchProvider("a", fail=True)
+    ok = NamedFailingFetchProvider("b", fail=False)
+    router = Router([failing, ok], cache_ttl=60)
+    name1, r1 = await router.run("fetch", url="https://x")
+    assert name1 == "b" and r1.content == "ok"
+    assert failing.calls == 1 and ok.calls == 1
+    # second call served from cache: no further provider calls
+    name2, _ = await router.run("fetch", url="https://x")
+    assert name2 == "b" and failing.calls == 1 and ok.calls == 1
+
+
+async def test_cache_keyed_by_format():
+    provider = CountingProvider()
+    router = Router([provider], cache_ttl=60)
+    await router.run("fetch", url="https://x", format="markdown")
+    await router.run("fetch", url="https://x", format="html")
+    assert provider.calls == 2
+    await router.run("fetch", url="https://x", format="markdown")
+    assert provider.calls == 2
+
+
+async def test_cache_key_is_stable():
+    provider = CountingProvider()
+    router = Router([provider], cache_ttl=60)
+    k1 = router._cache_key("fetch", None, {"url": "https://x", "format": "markdown"})
+    k2 = router._cache_key("fetch", None, {"format": "markdown", "url": "https://x"})
+    assert k1 == k2  # kwargs sorted -> order-independent
+    k3 = router._cache_key("fetch", None, {"url": "https://x", "format": "html"})
+    assert k1 != k3
+    k4 = router._cache_key("fetch", "p", {"url": "https://x", "format": "markdown"})
+    assert k1 != k4  # preferred provider participates
+
+
+async def test_available_returns_priority_order_and_filters():
+    router = make_router(
+        FakeProvider("a", {"search", "fetch"}),
+        FakeProvider("x", {"search"}, enabled=False),
+        FakeProvider("b", {"search"}),
+        priority=["b", "a", "x"],
+    )
+    names = [p.name for p in router.available("search")]
+    assert names == ["b", "a"]  # disabled x excluded, order honored
+    assert [p.name for p in router.available("fetch")] == ["a"]
+
+
+async def test_preferred_without_capability_and_no_alternatives():
+    router = make_router(FakeProvider("a", {"search"}))
+    with pytest.raises(NoProviderAvailable, match="does not support 'fetch'"):
+        await router.run("fetch", preferred="a", url="https://x")

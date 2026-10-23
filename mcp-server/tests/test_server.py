@@ -657,3 +657,75 @@ def test_load_playbook_reads_package():
     text = server_mod._load_playbook()
     assert "AliExpress" in text
     assert "old.reddit" in text
+
+
+async def test_unknown_provider_with_scrappey_returns_error_not_gate():
+    # a typo'd provider name must surface the real error, not an emulation
+    # explanation claiming no provider is configured
+    provider = GateProvider()
+    async with client_for(Router([provider]), default_provider="scrappey") as session:
+        res = await session.call_tool("web_search", {"query": "x", "provider": "bogus"})
+    payload = json.loads(res.content[0].text)
+    assert "unknown provider 'bogus'" in payload["error"]
+    assert "emulation" not in payload
+    assert provider.fetch_calls == []
+
+
+async def test_all_providers_failed_during_failover_fires_gate():
+    # every configured candidate failing (e.g. keyless Jina always failing
+    # search) is an environment condition -> gate, not a bare error
+    class FailingSearchProvider(BaseProvider):
+        name = "s1"
+        capabilities = frozenset({"search"})
+
+        async def search(self, query: str, **kw):
+            raise ProviderError("search exploded")
+
+    class FailingSearchProvider2(FailingSearchProvider):
+        name = "s2"
+
+    router = Router([FailingSearchProvider(), FailingSearchProvider2(), GateProvider()])
+    async with client_for(router) as session:
+        res = await session.call_tool("web_search", {"query": "x"})
+    payload = json.loads(res.content[0].text)
+    assert payload["emulation"]["executed"] is False
+    assert payload["emulation"]["tool"] == "web_search"
+
+
+async def test_disabled_preferred_provider_surfaces_error():
+    # a caller pinning a disabled provider gets the real error, not a gate
+    provider = GateProvider()
+    disabled = FetchOnlyProvider(enabled=False)
+    disabled.name = "other"
+    async with client_for(Router([provider, disabled]), default_provider="scrappey") as session:
+        res = await session.call_tool("web_fetch", {"url": "https://x", "provider": "other"})
+    payload = json.loads(res.content[0].text)
+    assert "not configured" in payload["error"]
+
+
+async def test_gate_fires_with_scrappey_enabled_but_no_default_provider():
+    provider = GateProvider()
+    async with client_for(Router([provider])) as session:
+        res = await session.call_tool("web_search", {"query": "x"})
+    payload = json.loads(res.content[0].text)
+    assert payload["emulation"]["executed"] is False
+    assert provider.fetch_calls == []
+
+
+async def test_web_session_invalid_op_rejected():
+    async with client_for(Router([RecordingProvider()])) as session:
+        res = await session.call_tool("web_session", {"op": "pause", "session": "s1"})
+    assert "Input should be 'create' or 'destroy'" in res.content[0].text
+
+
+async def test_schema_defaults_and_optional_params():
+    async with client_for(Router([RecordingProvider()])) as session:
+        tools = await session.list_tools()
+        schemas = {t.name: t.input_schema for t in tools.tools}
+    assert schemas["web_extract"]["properties"]["js_render"]["default"] is False
+    assert schemas["web_fetch"]["properties"]["format"]["default"] == "markdown"
+    assert schemas["web_browser_actions"]["properties"]["format"]["default"] == "markdown"
+    search = schemas["web_search"]["properties"]
+    assert "freshness" in search and "country" in search and "force" not in search
+    assert schemas["web_search"]["required"] == ["query"]  # defaults are optional
+    assert schemas["web_fetch"]["required"] == ["url"]

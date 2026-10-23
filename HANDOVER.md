@@ -17,7 +17,7 @@ unified agent tools.
 
 ## Current state (all verified)
 
-- **231 tests pass** (`mcp-server/tests`).
+- **273 tests pass** (`mcp-server/tests`).
 - Registered with Oh My Pi on this machine: `~/.omp/agent/mcp.json` →
   `scrape-n-search` (stdio, `python -m scrape_n_search`, cwd=`mcp-server`, 120s timeout).
 - A real `SCRAPPEY_API_KEY` is set in `mcp-server/.env` (gitignored). `DEFAULT_PROVIDER=scrappey`
@@ -62,6 +62,26 @@ unified agent tools.
   switch, fragment dedup, parser tolerance), server gate error paths,
   ENABLED_TOOLS env, playbook fallback, model to_dict, and the
   real-provider-wins scenario.
+- **Test suite expanded 231 → 273 + two adapter fixes (test-discovered)**:
+  - Exa: the API returns `highlights` as a list; the adapter assigned it
+    verbatim to the string-typed `snippet` (list `[:500]` cap silently did
+    nothing). Now flattened to text before the 500-char cap.
+  - Gate eligibility is a deny-list of caller errors: `web_search/web_crawl/
+    web_extract` fire the emulation gate whenever the environment cannot
+    serve the call (no provider supports it OR all candidates failed — the
+    keyless-Jina-always-fails path is the real-world case) but surface
+    caller mistakes verbatim (unknown/disabled provider, unsupported pin,
+    unknown tool). Previously a typo'd `provider=` returned a misleading
+    "no provider configured" explanation, and (intermediate state) the gate
+    was wrongly suppressed in the standard Scrappey-only deployment.
+  - New coverage: every adapter's optional-param request bodies and failure
+    paths (Exa fetch/params, Tavily params, TinyFish params/error/cap,
+    Serper geo/empty, ZenRows extract/proxy_country, Scrappey default
+    bodies), router cache semantics (failure never cached, format-keyed,
+    key stability, available() ordering), explanation payload exact
+    contents, extract truncation boundary, search-result cap, LLM 401
+    no-retry, schema defaults/requireds, invalid session op, configure_
+    logging wiring, PROVIDER_PRIORITY env.
 
 - **Emulated `web_search`/`web_crawl`/`web_extract` with a dual-run trigger** —
   Scrappey has no search/crawl/extract endpoints, so when it is the only configured provider the

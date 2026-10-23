@@ -740,3 +740,279 @@ async def test_tavily_extract_failure_raises():
     )))
     with pytest.raises(ProviderError, match="blocked"):
         await provider.fetch("https://x")
+
+
+# --- Exa: fetch normalization, no-result error, search params ---------------
+
+
+async def test_exa_fetch_normalizes():
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/contents"
+        body = json.loads(request.read())
+        assert body == {"ids": ["https://example.com"], "text": True}
+        return httpx.Response(
+            200,
+            json={"results": [{"url": "https://final.example.com", "title": "T", "text": "# body"}]},
+        )
+
+    provider = ExaProvider("k", make_client(handler))
+    page = await provider.fetch("https://example.com")
+    assert page.url == "https://final.example.com"
+    assert page.content == "# body"
+    assert page.title == "T"
+    assert page.format == "markdown"
+
+
+async def test_exa_fetch_no_result_raises():
+    from scrape_n_search.errors import ProviderError
+
+    provider = ExaProvider("k", make_client(lambda r: httpx.Response(200, json={"results": []})))
+    with pytest.raises(ProviderError, match="no result"):
+        await provider.fetch("https://example.com")
+
+
+async def test_exa_search_sends_optional_params_and_caps_snippet():
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.read())
+        assert body["type"] == "neural"
+        assert body["category"] == "company"
+        assert body["includeDomains"] == ["a.com"]
+        assert body["excludeDomains"] == ["b.com"]
+        return httpx.Response(
+            200,
+            json={
+                "results": [
+                    {"title": "T", "url": "https://t", "highlights": ["hl"], "publishedDate": "2026-01-01", "score": 0.5},
+                    {"title": "T2", "url": "https://t2", "text": "x" * 900},
+                ]
+            },
+        )
+
+    provider = ExaProvider("k", make_client(handler))
+    results = await provider.search(
+        "q", search_type="neural", category="company",
+        include_domains=["a.com"], exclude_domains=["b.com"],
+    )
+    # highlights list is flattened to a string (unified snippet contract)
+    assert results[0].snippet == "hl"
+    assert results[0].score == 0.5
+    # long text snippet capped at 500 chars
+    assert len(results[1].snippet) == 500
+
+
+async def test_exa_search_flattens_multi_highlight_list():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"results": [{"title": "T", "url": "https://t", "highlights": ["first", "second"]}]},
+        )
+
+    provider = ExaProvider("k", make_client(handler))
+    results = await provider.search("q")
+    assert results[0].snippet == "first second"
+
+
+async def test_exa_search_empty_highlights_type_tolerance():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"results": [{"title": "T", "url": "https://t", "highlights": []}]})
+
+    provider = ExaProvider("k", make_client(handler))
+    results = await provider.search("q")
+    assert len(results) == 1
+    assert results[0].snippet == ""  # empty highlights -> empty snippet, not a crash
+
+
+
+# --- Tavily: search params body ---------------------------------------------
+
+
+async def test_tavily_search_sends_optional_params():
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.read())
+        assert body["search_depth"] == "advanced"
+        assert body["topic"] == "news"
+        assert body["time_range"] == "week"
+        assert body["country"] == "us"
+        assert body["include_domains"] == ["a.com"]
+        assert body["exclude_domains"] == ["b.com"]
+        return httpx.Response(200, json={"results": [{"title": "T", "url": "https://t"}]})
+
+    provider = TavilyProvider("k", make_client(handler))
+    results = await provider.search(
+        "q", search_depth="advanced", topic="news", freshness="week", country="us",
+        include_domains=["a.com"], exclude_domains=["b.com"],
+    )
+    assert results[0].title == "T"
+
+
+async def test_tavily_search_defaults_body():
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.read())
+        assert body == {
+            "api_key": "k",
+            "query": "q",
+            "max_results": 5,
+            "search_depth": "basic",
+            "topic": "general",
+        }
+        return httpx.Response(200, json={"results": []})
+
+    provider = TavilyProvider("k", make_client(handler))
+    assert await provider.search("q") == []
+
+
+# --- TinyFish: search params, result cap, fetch error ------------------------
+
+
+async def test_tinyfish_search_sends_optional_params():
+    def handler(request: httpx.Request) -> httpx.Response:
+        params = request.url.params
+        assert params["recency_minutes"] == "1440"  # "day" freshness
+        assert params["location"] == "Berlin"
+        assert params["language"] == "de"
+        assert params["domain_type"] == "news"
+        return httpx.Response(200, json={"results": [{"title": "T", "url": "https://t", "snippet": "s"}]})
+
+    provider = TinyFishProvider("k", make_client(handler))
+    results = await provider.search("q", freshness="day", location="Berlin", language="de", domain_type="news")
+    assert results[0].title == "T"
+
+
+async def test_tinyfish_search_ignores_unknown_freshness_and_web_domain_type():
+    def handler(request: httpx.Request) -> httpx.Response:
+        params = request.url.params
+        assert "recency_minutes" not in params
+        assert "domain_type" not in params  # "web" is the default -> omitted
+        return httpx.Response(200, json={"results": []})
+
+    provider = TinyFishProvider("k", make_client(handler))
+    assert await provider.search("q", freshness="decade") == []
+
+
+async def test_tinyfish_search_caps_results():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"results": [{f"title": f"r{i}", "url": f"https://t/{i}"} for i in range(10)]},
+        )
+
+    provider = TinyFishProvider("k", make_client(handler))
+    results = await provider.search("q", max_results=3)
+    assert len(results) == 3
+
+
+async def test_tinyfish_fetch_error_path():
+    from scrape_n_search.errors import ProviderError
+
+    provider = TinyFishProvider("k", make_client(lambda r: httpx.Response(
+        200, json={"results": [], "errors": [{"message": "blocked"}]}
+    )))
+    with pytest.raises(ProviderError, match="blocked"):
+        await provider.fetch("https://example.com")
+
+
+# --- Serper: geo/language params, empty results ------------------------------
+
+
+async def test_serper_search_sends_country_language_and_caps():
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.read())
+        assert body["gl"] == "us"
+        assert body["hl"] == "en"
+        assert body["num"] == 2
+        return httpx.Response(
+            200,
+            json={"organic": [{"title": "T", "link": "https://t", "snippet": "s", "date": "y"} for _ in range(5)]},
+        )
+
+    provider = SerperProvider("k", make_client(handler))
+    results = await provider.search("q", max_results=2, country="us", language="en")
+    assert len(results) == 2
+
+
+async def test_serper_search_empty_organic():
+    provider = SerperProvider("k", make_client(lambda r: httpx.Response(200, json={"organic": []})))
+    assert await provider.search("q") == []
+
+
+# --- ZenRows: extract request shape, proxy_country ---------------------------
+
+
+async def test_zenrows_extract_request_shape():
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/v1/extract"
+        assert request.url.params["apikey"] == "k"
+        assert request.url.params["url"] == "https://example.com"
+        assert request.url.params["extract"] == "auto"
+        return httpx.Response(200, json={"title": "T", "price": 1})
+
+    provider = ZenRowsProvider("k", make_client(handler))
+    assert await provider.extract("https://example.com") == {"title": "T", "price": 1}
+
+
+async def test_zenrows_fetch_sends_proxy_country():
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.params["proxy_country"] == "us"
+        return httpx.Response(200, text="# body")
+
+    provider = ZenRowsProvider("k", make_client(handler))
+    page = await provider.fetch("https://example.com", proxy_country="us")
+    assert page.url == "https://example.com"
+
+
+# --- Scrappey: screenshot default body, browser_actions defaults -------------
+
+
+async def test_scrappey_screenshot_default_body():
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.read())
+        assert body["screenshot"] is True
+        assert "screenshot_fullpage" not in body
+        assert "screenshot_selector" not in body
+        return httpx.Response(200, json={"solution": {"screenshot": "img"}, "data": "success"})
+
+    provider = ScrappeyProvider("k", make_client(handler))
+    assert await provider.screenshot("https://example.com") == "img"
+
+
+async def test_scrappey_browser_actions_defaults_to_markdown_filter():
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.read())
+        assert body["markdown"] is True
+        assert body["filter"] == ["markdown"]
+        return httpx.Response(
+            200, json={"solution": {"markdown": "# m"}, "data": "success"}
+        )
+
+    provider = ScrappeyProvider("k", make_client(handler))
+    result = await provider.browser_actions("https://example.com", actions=[{"type": "wait", "wait": 1}])
+    assert result.content == "# m"
+    assert result.format == "markdown"
+    assert result.javascript_return == []  # missing javascriptReturn -> []
+
+
+# --- Firecrawl: search data-as-list, crawl without data ----------------------
+
+
+async def test_firecrawl_search_data_as_plain_list():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"data": [{"title": "T", "url": "https://t"}]})
+
+    provider = FirecrawlProvider("k", make_client(handler))
+    results = await provider.search("q")
+    assert len(results) == 1
+
+
+async def test_firecrawl_crawl_completed_without_data():
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST":
+            return httpx.Response(200, json={"success": True, "id": "job1"})
+        return httpx.Response(200, json={"status": "completed", "data": []})
+
+    provider = FirecrawlProvider("k", make_client(handler))
+    assert await provider.crawl("https://t", poll_interval=0.01, timeout=1) == []
+
+
+async def test_firecrawl_extract_missing_data_returns_none():
+    provider = FirecrawlProvider("k", make_client(lambda r: httpx.Response(200, json={"data": None})))
+    assert await provider.extract("https://t") is None

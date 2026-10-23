@@ -625,3 +625,78 @@ def test_extract_explanation_shape():
     payload2 = extract_explanation("https://example.com", None, True, "openrouter")
     assert "full-browser mode" in payload2["emulation"]["how"]
     assert not any("no LLM key" in d for d in payload2["emulation"]["drawbacks"])
+
+
+# --- additional edge coverage -----------------------------------------------
+
+
+async def test_emulated_search_caps_below_parser_yield():
+    three_results = BING_HTML + """
+    <li class="b_algo"><h2><a href="https://third.example/">Third</a></h2><p>s</p></li>
+    """
+    provider = StubProvider({"https://www.bing.com/search?q=x": three_results})
+    results = await emulated_search(provider, "x", 2)
+    assert [r.title for r in results] == ['Example "Domain"', "Other Org"]
+
+
+async def test_emulated_extract_truncation_boundary(monkeypatch):
+    seen = {}
+
+    async def fake_summarize(text, *, instruction=None):
+        seen["text"] = text
+        return "# ok"
+
+    monkeypatch.setattr("scrape_n_search.llm.summarize", fake_summarize)
+    with monkeypatch.context() as m:
+        m.setenv("OPENROUTER_API_KEY", "k")
+        m.setenv("EXTRACT_MAX_CHARS", "100")
+        provider = StubProvider({"https://example.com/": "<p>" + "x" * 100 + "</p>"})
+        await emulated_extract(provider, "https://example.com/")
+        assert len(seen["text"]) == 100  # exactly at cap: no truncation
+
+        provider2 = StubProvider({"https://example.com/": "<p>" + "y" * 101 + "</p>"})
+        await emulated_extract(provider2, "https://example.com/")
+        assert len(seen["text"]) == 100  # one over: truncated to the cap
+
+
+def test_search_explanation_echoes_params_and_costs():
+    payload = search_explanation("pizza", 7, freshness="week", country="us")
+    emu = payload["emulation"]
+    assert "one Scrappey full-browser request" in emu["how"]
+    assert "js_render=true" in emu["how"]
+    assert "€1/1K" in emu["how"] and "20–40s" in emu["how"]
+    assert any("freshness='week' and country='us' are ignored" in d for d in emu["drawbacks"])
+    assert any("€1/1K" in d for d in emu["drawbacks"])
+    assert any("Bing markup or anti-bot" in d for d in emu["drawbacks"])
+    assert any("max_results is a ceiling" in d for d in emu["drawbacks"])
+
+
+def test_crawl_explanation_echoes_bounds_and_cost():
+    payload = crawl_explanation("https://example.com", 25, 3)
+    emu = payload["emulation"]
+    assert "https://example.com" in emu["how"]
+    assert "25 pages" in emu["how"] and "depth ≤ 3" in emu["how"]
+    assert "€0.10/1K" in emu["how"]
+    assert any("max_pages × basic-mode" in d for d in emu["drawbacks"])
+    assert any("no partial results" in d for d in emu["drawbacks"])
+    assert any("raw HTML" in d for d in emu["drawbacks"])
+
+
+def test_extract_explanation_mentions_truncation_and_llm_cost():
+    payload = extract_explanation("https://example.com", None, False, "huggingface")
+    emu = payload["emulation"]
+    # the formatted cap (100,000) appears in the drawbacks
+    assert any("100,000" in d for d in emu["drawbacks"])
+    assert any("huggingface" in emu["how"] or "harness LLM account" in d for d in emu["drawbacks"])
+    assert any("not a lossless or structured extract" in d for d in emu["drawbacks"])
+
+
+async def test_link_extraction_excludes_empty_and_protocol_hrefs():
+    html = (
+        '<a href="">empty</a>'
+        '<a href="tel:+123">tel</a>'
+        '<a href="#">frag</a>'
+        '<a href="HTTP://example.com/up">case</a>'
+    )
+    links = _extract_links(html, "https://example.com/dir/")
+    assert links == ["HTTP://example.com/up"]  # scheme case is preserved; _crawl_key lowercases for dedupe

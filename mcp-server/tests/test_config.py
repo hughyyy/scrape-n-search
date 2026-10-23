@@ -186,3 +186,48 @@ async def test_enabled_tools_env_restricts_visible_tools(monkeypatch):
         assert server2._tool_manager.get_tool("web_bogus") is None
     finally:
         await router.aclose()
+
+
+# --- configure_logging and env-driven router order --------------------------
+
+
+def test_configure_logging_applies_env_level(monkeypatch):
+    from scrape_n_search.__main__ import configure_logging
+
+    kwargs = {}
+    monkeypatch.setattr(logging, "basicConfig", lambda **kw: kwargs.update(kw))
+    monkeypatch.setenv("LOG_LEVEL", "DEBUG")
+    configure_logging()
+    assert kwargs["level"] == logging.DEBUG
+
+
+def test_configure_logging_rejects_invalid(monkeypatch):
+    from scrape_n_search.__main__ import configure_logging
+
+    monkeypatch.setenv("LOG_LEVEL", "loud")
+    with pytest.raises(ValueError, match="LOG_LEVEL"):
+        configure_logging()
+
+
+async def test_build_router_applies_custom_priority(monkeypatch):
+    monkeypatch.delenv("PROVIDER_PRIORITY", raising=False)
+    monkeypatch.setenv("PROVIDER_PRIORITY", "jina,serper,scrappey")
+    monkeypatch.delenv("JINA_KEYLESS", raising=False)
+    router = build_router_from_env()
+    try:
+        order = router._order
+        assert order.index("jina") < order.index("serper") < order.index("scrappey")
+        # providers not named keep their registry order at the tail
+        assert set(order) == {p.name for p in router._providers.values()}
+    finally:
+        await router.aclose()
+
+
+async def test_build_router_priority_ignores_unknown_names(monkeypatch):
+    monkeypatch.setenv("PROVIDER_PRIORITY", "nope,also-nope")
+    monkeypatch.delenv("JINA_KEYLESS", raising=False)
+    router = build_router_from_env()
+    try:
+        assert router._order == [p.name for p in router._providers.values()]
+    finally:
+        await router.aclose()

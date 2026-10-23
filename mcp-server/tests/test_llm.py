@@ -278,3 +278,17 @@ async def test_aclose_closes_shared_client_and_is_idempotent():
     assert client.is_closed
     assert llm._client is None
     await llm.aclose()  # second close must not raise
+
+
+async def test_summarize_401_no_retry(monkeypatch):
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        return httpx.Response(401, text="bad key")
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "k")
+    _patch_client(monkeypatch, handler)
+    with pytest.raises(ProviderError, match="LLM summarize failed"):
+        await llm.summarize("text")
+    assert calls["n"] == 1  # auth errors are not retried without the param

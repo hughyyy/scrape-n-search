@@ -189,6 +189,20 @@ def build_server(
                 return default_provider
         return None
 
+    def _gate_eligible(exc: NoProviderAvailable) -> bool:
+        """Whether a router error should fall through to the emulation gate.
+
+        Emulation is the designed fallback whenever the environment cannot
+        serve the call — no provider supports the tool, or every configured
+        candidate failed (keyless Jina always fails search, Scrappey-only
+        setups, etc.). Caller errors must be surfaced verbatim instead: an
+        explanation claiming 'no provider is configured' would be misleading
+        for a typo'd or disabled provider name.
+        """
+        msg = str(exc)
+        caller_errors = ("unknown provider", "is not configured", "does not support", "unknown tool")
+        return not any(tag in msg for tag in caller_errors)
+
     async def _dual_run(
         router: Router,
         *,
@@ -252,6 +266,8 @@ def build_server(
                     country=country,
                 )
             except NoProviderAvailable as exc:
+                if not _gate_eligible(exc):
+                    return json.dumps({"error": str(exc)})
                 return await _dual_run(
                     router,
                     capability="search",
@@ -385,6 +401,8 @@ def build_server(
                     max_depth=max_depth,
                 )
             except NoProviderAvailable as exc:
+                if not _gate_eligible(exc):
+                    return json.dumps({"error": str(exc)})
                 return await _dual_run(
                     router,
                     capability="crawl",
@@ -408,6 +426,8 @@ def build_server(
             try:
                 name, data = await router.run("extract", preferred=_preferred(provider, "extract"), url=url, prompt=prompt)
             except NoProviderAvailable as exc:
+                if not _gate_eligible(exc):
+                    return json.dumps({"error": str(exc)})
                 return await _dual_run(
                     router,
                     capability="extract",
