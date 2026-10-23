@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from contextlib import asynccontextmanager
 
+import httpx
 import pytest
 from mcp.client.client import InMemoryTransport
 from mcp.client.session import ClientSession
@@ -831,3 +832,141 @@ def test_hide_force_flags_tolerates_non_dict_properties():
 
     server = SimpleNamespace(_tool_manager=FakeManager())
     _hide_force_flags(server)  # must not raise on malformed schema shapes
+
+
+# --- inclusive bounds and default argument plumbing ---------------------
+
+
+class KwargProvider(BaseProvider):
+    """Records the exact kwargs each unified tool forwards to the provider."""
+
+    name = "kwarg"
+    capabilities = frozenset({"search", "fetch", "crawl"})
+
+    def __init__(self):
+        super().__init__()
+        self.calls: dict[str, dict] = {}
+
+    async def search(self, query: str, **kw):
+        self.calls["search"] = {"query": query, **kw}
+        return [SearchResult(title=query, url="https://kwarg")]
+
+    async def fetch(self, url: str, **kw):
+        self.calls["fetch"] = {"url": url, **kw}
+        return FetchedPage(url=url, content="c")
+
+    async def crawl(self, url: str, **kw):
+        self.calls["crawl"] = {"url": url, **kw}
+        return [CrawlPage(url=url)]
+
+
+@pytest.mark.parametrize("max_results", [1, 50])
+async def test_web_search_accepts_inclusive_max_results_bounds(max_results):
+    provider = KwargProvider()
+    async with client_for(Router([provider])) as session:
+        res = await session.call_tool("web_search", {"query": "q", "max_results": max_results})
+        assert "error" not in json.loads(res.content[0].text)
+    assert provider.calls["search"]["max_results"] == max_results
+
+
+@pytest.mark.parametrize("max_pages,max_depth", [(1, 1), (100, 10)])
+async def test_web_crawl_accepts_inclusive_bounds(max_pages, max_depth):
+    provider = KwargProvider()
+    async with client_for(Router([provider])) as session:
+        res = await session.call_tool(
+            "web_crawl", {"url": "https://x", "max_pages": max_pages, "max_depth": max_depth}
+        )
+        assert "error" not in json.loads(res.content[0].text)
+    assert provider.calls["crawl"] == {
+        "url": "https://x",
+        "max_pages": max_pages,
+        "max_depth": max_depth,
+    }
+
+
+async def test_web_fetch_forwards_documented_defaults():
+    provider = KwargProvider()
+    async with client_for(Router([provider])) as session:
+        await session.call_tool("web_fetch", {"url": "https://x"})
+    assert provider.calls["fetch"] == {
+        "url": "https://x",
+        "format": "markdown",
+        "js_render": False,
+        "premium_proxy": False,
+        "proxy_country": None,
+        "session": None,
+    }
+
+
+async def test_web_fetch_forwards_explicit_flags():
+    provider = KwargProvider()
+    async with client_for(Router([provider])) as session:
+        await session.call_tool(
+            "web_fetch",
+            {"url": "https://x", "format": "html", "js_render": True, "premium_proxy": True},
+        )
+    assert provider.calls["fetch"]["format"] == "html"
+    assert provider.calls["fetch"]["js_render"] is True
+    assert provider.calls["fetch"]["premium_proxy"] is True
+
+
+async def test_enabled_tools_empty_set_exposes_no_tools():
+    names = await _list_names(Router([FakeProvider()]), enabled_tools=set())
+    assert names == set()
+
+
+async def test_enabled_tools_unknown_names_ignored():
+    names = await _list_names(Router([FakeProvider()]), enabled_tools={"web_fetch", "bogus"})
+    assert names == {"web_fetch"}
+
+
+# --- protocol-level surfaces --------------------------------------------
+
+
+async def test_unknown_tool_is_a_protocol_error():
+    async with client_for(Router([FakeProvider()])) as session:
+        res = await session.call_tool("does_not_exist", {})
+    assert res.is_error
+    assert "Unknown tool" in res.content[0].text
+
+
+async def test_missing_required_argument_is_a_validation_error():
+    async with client_for(Router([FakeProvider()])) as session:
+        res = await session.call_tool("web_search", {})
+    assert res.is_error
+    assert "validation error" in res.content[0].text.lower()
+
+
+async def test_wrong_argument_type_is_a_validation_error():
+    async with client_for(Router([FakeProvider()])) as session:
+        res = await session.call_tool("web_search", {"query": 5})
+    assert res.is_error
+    assert "validation error" in res.content[0].text.lower()
+
+
+async def test_unknown_resource_uri_is_a_protocol_error():
+    from mcp.shared.exceptions import MCPError
+
+
+    async with client_for(Router([FakeProvider()])) as session:
+        with pytest.raises(MCPError, match="Unknown resource"):
+            await session.read_resource("scrape-n-search://nope")
+
+
+async def test_malformed_provider_surfaces_aggregated_error_json():
+    # full chain: shape-invalid 200 -> ProviderError -> router aggregation ->
+    # tool JSON error (never an unhandled crash through the MCP transport)
+    from conftest import make_client
+
+    from scrape_n_search.providers.tavily import TavilyProvider
+
+
+    malformed = TavilyProvider(
+        "k", make_client(lambda r: httpx.Response(200, json={"results": {}}))
+    )
+    async with client_for(Router([malformed])) as session:
+        res = await session.call_tool("web_search", {"query": "q"})
+    assert not res.is_error
+    payload = json.loads(res.content[0].text)
+    assert "all providers failed for 'search'" in payload["error"]
+    assert "malformed 'results'" in payload["error"]

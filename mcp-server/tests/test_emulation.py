@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import base64
+import random
+import re
+import time
+from urllib.parse import urlparse
 
 import pytest
-
-from urllib.parse import urlparse
 
 from scrape_n_search.emulation import (
     _BingSERPParser,
@@ -17,6 +19,7 @@ from scrape_n_search.emulation import (
     _html_to_text,
     _is_skippable,
     _llm_max_chars,
+    _strip_blocks,
     _unredirect,
     crawl_explanation,
     emulated_crawl,
@@ -816,3 +819,296 @@ def test_bing_parser_defensive_guards_under_corrupt_state():
     parser._buf = None
     parser.feed("</p>")  # p close with no result context
     assert parser.results == []
+
+
+# --- truncated SERP handling --------------------------------------------
+
+
+def test_bing_parser_flushes_truncated_final_result():
+    # a response cut mid-<li> (proxy truncation) must still yield the result
+    # whose title, href, and snippet all arrived
+    html = (
+        '<ol id="b_results"><li class="b_algo">'
+        '<h2><a href="https://example.com/a">A</a></h2><p>first</p></li>'
+        '<li class="b_algo"><h2><a href="https://example.com/b">B</a></h2><p>second</p>'
+    )
+    parser = _BingSERPParser()
+    parser.feed(html)
+    assert [r.title for r in parser.results] == ["A"]
+    parser.close()
+    assert [r.title for r in parser.results] == ["A", "B"]
+    assert parser.results[1].url == "https://example.com/b"
+    assert parser.results[1].snippet == "second"
+    parser.close()  # idempotent: closing twice must not duplicate the result
+    assert len(parser.results) == 2
+
+
+def test_bing_parser_close_without_open_result_is_noop():
+    parser = _BingSERPParser()
+    parser.feed("<ol><li>not a result</li></ol>")
+    parser.close()
+    assert parser.results == []
+
+
+async def test_emulated_search_keeps_truncated_tail():
+    html = (
+        '<li class="b_algo"><h2><a href="https://example.com/a">A</a></h2>'
+        '<p>snip</p></li><li class="b_algo"><h2><a href="https://example.com/b">B</a>'
+    )
+    provider = StubProvider({"https://www.bing.com/search?q=x": html})
+    results = await emulated_search(provider, "x", 5)
+    assert [r.title for r in results] == ["A", "B"]
+
+
+# --- query encoding and result caps -------------------------------------
+
+
+async def test_emulated_search_encodes_special_and_non_ascii_query():
+    fetched: list[str] = []
+
+    async def capture(url: str, **kw) -> FetchedPage:
+        fetched.append(url)
+        return FetchedPage(
+            url=url,
+            content='<li class="b_algo"><h2><a href="https://example.com/a">A</a></h2></li>',
+            title=None,
+        )
+
+    provider = StubProvider()
+    provider.fetch = capture  # type: ignore[method-assign]
+    results = await emulated_search(provider, "a b&c=d/ç", 1)
+    assert fetched == ["https://www.bing.com/search?q=a+b%26c%3Dd%2F%C3%A7"]
+    assert len(results) == 1
+    assert results[0].title == "A"
+
+
+async def test_emulated_search_dedupes_after_redirect_decoding():
+    target = "https://example.com/same"
+    encoded = base64.urlsafe_b64encode(target.encode()).decode()
+    unpadded = encoded.rstrip("=")
+    html = (
+        f'<li class="b_algo"><h2><a href="https://www.bing.com/ck/a?u={unpadded}">A</a></h2></li>'
+        f'<li class="b_algo"><h2><a href="https://www.bing.com/ck/a?u={encoded}">B</a></h2></li>'
+    )
+    provider = StubProvider({"https://www.bing.com/search?q=x": html})
+    results = await emulated_search(provider, "x", 5)
+    # both redirects decode to the same URL: one result, first title wins
+    assert [(r.title, r.url) for r in results] == [("A", target)]
+
+
+async def test_emulated_search_max_results_one_truncates_parser_yield():
+    html = "".join(
+        f'<li class="b_algo"><h2><a href="https://example.com/{i}">R{i}</a></h2></li>'
+        for i in range(5)
+    )
+    provider = StubProvider({"https://www.bing.com/search?q=x": html})
+    results = await emulated_search(provider, "x", 1)
+    assert [r.title for r in results] == ["R0"]
+
+
+# --- block stripping: semantics, coverage, and linear time ---------------
+
+
+@pytest.mark.parametrize("tag", ["script", "style", "noscript", "template", "svg", "iframe", "head"])
+def test_html_to_text_drops_every_block_tag(tag):
+    html = f"<div>keep1</div><{tag} class='x'>DROP</{tag}><div>keep2</div>"
+    text = _html_to_text(html)
+    assert "DROP" not in text
+    assert "keep1" in text and "keep2" in text
+
+
+def test_html_to_text_block_strip_is_case_insensitive():
+    assert "DROP" not in _html_to_text("<SCRIPT>DROP</SCRIPT><p>keep</p>")
+    assert "DROP" not in _html_to_text("<Style>DROP</STYLE><p>keep</p>")
+
+
+def test_strip_blocks_equivalent_to_reference_regex():
+    # the linear scanner must match the documented regex semantics exactly,
+    # including the single space left where a block was removed
+    reference = re.compile(
+        r"<(script|style|noscript|template|svg|iframe|head)[^>]*>.*?</\1>",
+        re.IGNORECASE | re.DOTALL,
+    )
+    tokens = [
+        "<script>", "</script>", "<style >", "</style>", "<head>", "</head>",
+        "<svg>", "</svg>", "<div>", "</div>", "<p>", "<SCRIPT>", "</SCRIPT>",
+        "text", " ", "<b>", "</b>", "<script x=1>", "</script >", "<template>",
+        "</template>", "<noscript>", "</noscript>", "<", "a1", "\n",
+    ]
+    rng = random.Random(20261023)
+    for _ in range(3000):
+        soup = "".join(rng.choice(tokens) for _ in range(rng.randint(0, 30)))
+        assert _strip_blocks(soup) == reference.sub(" ", soup), soup
+
+
+def test_block_stripping_stays_linear_on_unterminated_openers():
+    # 8000 unterminated openers: the backtracking pattern rescanned to EOF per
+    # opener (seconds to minutes, blocking the event loop); linear must be ms
+    soup = "<script>" * 8000 + "<p>keep</p>"
+    started = time.monotonic()
+    text = _html_to_text(soup)
+    elapsed = time.monotonic() - started
+    assert text == "keep"
+    assert elapsed < 2.0, f"block stripping is superlinear: {elapsed:.2f}s"
+
+
+# --- URL helpers --------------------------------------------------------
+
+
+def test_skippable_trailing_slash_and_path_segments():
+    assert _is_skippable("https://example.com/dl/report.pdf/")
+    assert _is_skippable("https://example.com/a.PDF")
+    assert _is_skippable("https://example.com/x.mp4?token=1")
+    assert not _is_skippable("https://example.com/dir/file.pdf/page")
+    assert not _is_skippable("https://example.com/v1.2")
+    assert not _is_skippable("https://example.com/")
+
+
+def test_unredirect_mixed_case_host_and_extra_params():
+    target = "https://example.com/page?a=1"
+    encoded = base64.urlsafe_b64encode(target.encode()).decode().rstrip("=")
+    url = f"https://WWW.Bing.COM/ck/a?!&&p=abc&u={encoded}&ntb=1"
+    assert _unredirect(url) == target
+
+
+def test_unredirect_first_u_param_wins():
+    first = base64.urlsafe_b64encode(b"https://first.example/").decode().rstrip("=")
+    second = base64.urlsafe_b64encode(b"https://second.example/").decode().rstrip("=")
+    assert _unredirect(f"https://www.bing.com/ck/a?u={first}&u={second}") == "https://first.example/"
+
+
+def test_title_extraction_nested_tags_and_unterminated():
+    assert _extract_title("<title> A <b>B</b> </title>") == "A B"
+    assert _extract_title("<title>   </title>") is None
+    assert _extract_title("<title>never closed") is None
+    assert _extract_title("<TITLE>Upper</TITLE>") == "Upper"
+
+
+def test_crawl_key_root_path_and_port():
+    assert _crawl_key("https://example.com") == "https://example.com/"
+    assert _crawl_key("HTTPS://WWW.Example.COM/A") == "https://example.com/A"
+    assert _crawl_key("https://example.com:8443/a#f") == "https://example.com:8443/a"
+
+
+def test_link_extraction_protocol_relative_and_uppercase_href():
+    links = _extract_links(
+        '<a HREF="//cdn.example/x.js">js</a><a href="  a b ">sp</a>',
+        "https://example.com/dir/page",
+    )
+    assert links == ["https://cdn.example/x.js", "https://example.com/dir/a b"]
+
+
+# --- crawl edge cases ---------------------------------------------------
+
+
+async def test_emulated_crawl_skips_asset_with_trailing_slash():
+    pages = {
+        "https://example.com/": '<a href="/report.pdf/">pdf</a><a href="/about">a</a>',
+        "https://example.com/about": "<p>about</p>",
+    }
+    provider = StubProvider(pages)
+    results = await emulated_crawl(provider, "https://example.com/", max_pages=5, max_depth=1)
+    assert [p.url for p in results] == ["https://example.com/", "https://example.com/about"]
+    assert all("report" not in url for url, _ in provider.calls)
+
+
+async def test_emulated_crawl_zero_depth_fetches_only_start():
+    provider = StubProvider({"https://example.com/": '<a href="/a">a</a>'})
+    pages = await emulated_crawl(provider, "https://example.com/", max_pages=5, max_depth=0)
+    assert [p.url for p in pages] == ["https://example.com/"]
+
+
+# --- extract truncation boundaries --------------------------------------
+
+
+async def test_emulated_extract_truncates_multibyte_text_by_chars(monkeypatch):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    provider = StubProvider({"https://example.com/": "<p>日本語のテキストです</p>"})
+    seen: list[str] = []
+
+    async def fake_summarize(text, *, instruction=None):
+        seen.append(text)
+        return "summary"
+
+    monkeypatch.setattr("scrape_n_search.llm.summarize", fake_summarize)
+    with monkeypatch.context() as m:
+        m.setenv("EXTRACT_MAX_CHARS", "5")
+        result = await emulated_extract(provider, "https://example.com/")
+    assert result == "summary"
+    assert seen == ["日本語のテ"]
+
+
+async def test_emulated_extract_exactly_at_limit_is_not_truncated(monkeypatch):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    provider = StubProvider({"https://example.com/": "<p>" + "abcdef" + "</p>"})
+    seen: list[str] = []
+
+    async def fake_summarize(text, *, instruction=None):
+        seen.append(text)
+        return "summary"
+
+    monkeypatch.setattr("scrape_n_search.llm.summarize", fake_summarize)
+    with monkeypatch.context() as m:
+        m.setenv("EXTRACT_MAX_CHARS", "6")
+        await emulated_extract(provider, "https://example.com/")
+    assert seen == ["abcdef"]
+
+
+def test_bing_parser_flushes_truncated_snippet_text():
+    # response cut mid-<p>: the title and url arrived, so the partial snippet
+    # must be kept rather than dropping the whole result
+    html = (
+        '<li class="b_algo"><h2><a href="https://example.com/a">A</a></h2>'
+        "<p>partial snippet without end tag"
+    )
+    parser = _BingSERPParser()
+    parser.feed(html)
+    parser.close()
+    assert [(r.title, r.snippet) for r in parser.results] == [
+        ("A", "partial snippet without end tag")
+    ]
+
+
+def test_bing_parser_flush_without_result_is_guarded():
+    # inconsistent internal state (depth says "in result", no result buffered)
+    # must not crash the flush path
+    parser = _BingSERPParser()
+    parser._li_depth = 1
+    parser._cur = None
+    parser.feed("</li>")
+    assert parser.results == []
+    parser._li_depth = 1
+    parser.close()
+    assert parser.results == []
+
+
+# --- invariants ---------------------------------------------------------
+
+
+def test_unredirect_is_idempotent_and_never_leaves_tracking_url():
+    rng = random.Random(4242)
+    for _ in range(200):
+        target = (
+            f"https://example{rng.randint(0, 9)}.com/p{rng.randint(0, 999)}"
+            f"?q={rng.randint(0, 9)}"
+        )
+        encoded = base64.urlsafe_b64encode(target.encode()).decode().rstrip("=")
+        redirect = f"https://www.bing.com/ck/a?!&&p={rng.randint(0, 99)}&u={encoded}"
+        decoded = _unredirect(redirect)
+        assert decoded == target
+        assert _unredirect(decoded) == decoded  # decoding is idempotent
+
+
+async def test_emulated_crawl_never_fetches_beyond_max_depth():
+    pages = {
+        "https://example.com/": '<a href="/l1">l1</a>',
+        "https://example.com/l1": '<a href="/l2">l2</a>',
+        "https://example.com/l2": '<a href="/l3">l3</a>',
+    }
+    provider = StubProvider(pages)
+    results = await emulated_crawl(provider, "https://example.com/", max_pages=10, max_depth=1)
+    assert [p.url for p in results] == ["https://example.com/", "https://example.com/l1"]
+    assert [url for url, _ in provider.calls] == [
+        "https://example.com/",
+        "https://example.com/l1",
+    ]

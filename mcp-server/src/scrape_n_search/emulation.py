@@ -30,6 +30,7 @@ import logging
 import os
 import re
 import urllib.parse
+from bisect import bisect_left
 from collections import deque
 from html.parser import HTMLParser
 from urllib.parse import urldefrag, urljoin, urlparse
@@ -48,12 +49,12 @@ BING_SEARCH = "https://www.bing.com/search"
 _DEFAULT_MAX_EXTRACT_CHARS = 100_000
 
 # Blocks that carry markup, scripting, or chrome — never page content.
-_STRIP_BLOCKS_RE = re.compile(
-    r"<(script|style|noscript|template|svg|iframe|head)[^>]*>.*?</\1>",
-    re.IGNORECASE | re.DOTALL,
-)
+_BLOCK_TAG_GROUP = r"(script|style|noscript|template|svg|iframe|head)"
+_BLOCK_OPEN_RE = re.compile(rf"<{_BLOCK_TAG_GROUP}\b[^>]*>", re.IGNORECASE | re.DOTALL)
+_BLOCK_CLOSE_RE = re.compile(rf"</{_BLOCK_TAG_GROUP}>", re.IGNORECASE)
 
-_TAG_RE = re.compile(r"<[^>]+>")
+# A tag may not contain '<'; excluding it keeps the scan linear on tag soup.
+_TAG_RE = re.compile(r"<[^<>]+>")
 
 # Cap links harvested from one page; bounds BFS fan-out on huge pages.
 _MAX_LINKS_PER_PAGE = 200
@@ -154,18 +155,8 @@ class _BingSERPParser(HTMLParser):
             return
         if tag == "li":
             self._li_depth -= 1
-            if self._li_depth == 0 and self._cur is not None:
-                cur = self._cur
-                url = _unredirect(_html.unescape(cur["url"].strip()))
-                title = _clean_text(cur["title"])
-                if url and title:
-                    self.results.append(
-                        SearchResult(title=title, url=url, snippet=_clean_text(cur["snippet"]))
-                    )
-                self._cur = None
-                self._in_h2 = False
-                self._in_p = False
-                self._buf = None
+            if self._li_depth == 0:
+                self._flush()
         elif tag == "h2" and self._in_h2:
             self._in_h2 = False
             if self._cur is not None:
@@ -176,6 +167,31 @@ class _BingSERPParser(HTMLParser):
             if self._cur is not None:
                 self._cur["snippet"] = _join_text(self._buf)
             self._buf = None
+
+    def close(self) -> None:
+        """Flush a result whose closing ``</li>`` never arrived (truncated SERP)."""
+        super().close()
+        if self._li_depth:
+            self._li_depth = 0
+            self._flush()
+
+    def _flush(self) -> None:
+        cur, self._cur = self._cur, None
+        # A truncated response can cut mid-title/mid-snippet: harvest whatever
+        # text arrived before the missing end tag.
+        if cur is not None and self._buf is not None:
+            cur["title" if self._in_h2 else "snippet"] = _join_text(self._buf)
+        self._in_h2 = False
+        self._in_p = False
+        self._buf = None
+        if cur is None:
+            return
+        url = _unredirect(_html.unescape(cur["url"].strip()))
+        title = _clean_text(cur["title"])
+        if url and title:
+            self.results.append(
+                SearchResult(title=title, url=url, snippet=_clean_text(cur["snippet"]))
+            )
 
     def handle_data(self, data: str) -> None:
         if self._buf is not None:
@@ -203,6 +219,7 @@ async def emulated_search(provider: BaseProvider, query: str, max_results: int) 
     parser = _BingSERPParser()
     try:
         parser.feed(page.content or "")
+        parser.close()
     except Exception:  # pragma: no cover - parser must never take the gate down
         logger.exception("bing serp parse failed for %r", query)
         return []
@@ -255,8 +272,9 @@ def _same_host(a: str, b: str) -> bool:
 
 
 def _is_skippable(url: str) -> bool:
-    ext = urlparse(url).path.rsplit(".", 1)[-1].lower() if "." in urlparse(url).path else ""
-    return ext in _SKIP_EXTENSIONS
+    path = urlparse(url).path.rstrip("/")
+    segment = path.rsplit("/", 1)[-1]
+    return "." in segment and segment.rsplit(".", 1)[-1].lower() in _SKIP_EXTENSIONS
 
 
 async def emulated_crawl(
@@ -296,12 +314,45 @@ async def emulated_crawl(
     return pages
 
 
+def _strip_blocks(html_text: str) -> str:
+    """Drop block elements together with their content, in one linear pass.
+
+    Equivalent to ``re.sub(r"<(tag)[^>]*>.*?</\\1>", " ", html_text)`` (first
+    closer wins, case-insensitive) — including the single space left behind —
+    but without the quadratic rescan that pattern performs on input with many
+    unterminated openers: one hostile page must not stall the event loop.
+    """
+    closes: dict[str, list[int]] = {}
+    for match in _BLOCK_CLOSE_RE.finditer(html_text):
+        closes.setdefault(match.group(1).lower(), []).append(match.start())
+    if not closes:
+        return html_text
+    kept: list[str] = []
+    consumed_until = 0
+    for match in _BLOCK_OPEN_RE.finditer(html_text):
+        if match.start() < consumed_until:
+            continue  # inside a block already dropped
+        starts = closes.get(match.group(1).lower())
+        if not starts:
+            continue
+        index = bisect_left(starts, match.end())
+        if index == len(starts):
+            continue
+        kept.append(html_text[consumed_until : match.start()])
+        kept.append(" ")
+        consumed_until = starts[index] + len(match.group(1)) + 3  # "</" + tag + ">"
+    if consumed_until == 0:
+        return html_text
+    kept.append(html_text[consumed_until:])
+    return "".join(kept)
+
+
 def _html_to_text(html_text: str) -> str:
     """Strip page HTML to readable text: drop script/style/chrome blocks and
     tags, remove stray raw angle brackets (e.g. ``1 < 2`` in text content),
     unescape entities, collapse whitespace. Entity-encoded brackets
     (``&lt;``/``&gt;``) are decoded after the raw ones are removed."""
-    without_blocks = _STRIP_BLOCKS_RE.sub(" ", html_text)
+    without_blocks = _strip_blocks(html_text)
     without_tags = _TAG_RE.sub(" ", without_blocks)
     without_brackets = re.sub(r"[<>]", " ", without_tags)
     return _clean_text(_html.unescape(without_brackets))

@@ -382,3 +382,102 @@ async def test_concurrent_identical_fetches_safe():
     calls_after = provider.calls
     await router.run("fetch", url="https://x")
     assert provider.calls == calls_after
+
+
+# --- priority hygiene ---------------------------------------------------
+
+
+async def test_duplicate_priority_names_are_tried_once():
+    class Boom(BaseProvider):
+        name = "boom"
+        capabilities = frozenset({"search"})
+
+        def __init__(self):
+            super().__init__()
+            self.calls = 0
+
+        async def search(self, query: str, **kw):
+            self.calls += 1
+            raise ProviderError("exploded")
+
+    provider = Boom()
+    router = Router([provider], priority=["boom", "boom", "missing"])
+    assert [p.name for p in router.available("search")] == ["boom"]
+    with pytest.raises(NoProviderAvailable, match="boom: exploded"):
+        await router.run("search", query="q")
+    assert provider.calls == 1  # a repeated name is not retried (and billed) twice
+
+
+async def test_duplicate_priority_keeps_first_occurrence_order():
+    a, b = FakeProvider("a", {"search"}), FakeProvider("b", {"search"})
+    router = Router([a, b], priority=["b", "a", "b"])
+    assert [p.name for p in router.available("search")] == ["b", "a"]
+
+
+async def test_cache_key_separates_fetch_options():
+    provider = CountingProvider()
+    router = Router([provider], cache_ttl=60)
+    await router.run("fetch", url="https://x")
+    await router.run("fetch", url="https://x", js_render=True)
+    await router.run("fetch", url="https://x", premium_proxy=True)
+    await router.run("fetch", url="https://x", proxy_country="UnitedStates")
+    await router.run("fetch", url="https://x", session="s1")
+    assert provider.calls == 5  # each option set is a distinct billed request
+    await router.run("fetch", url="https://x")  # the original key is still cached
+    assert provider.calls == 5
+
+
+# --- transport failures and malformed provider responses ----------------
+
+
+@pytest.mark.parametrize(
+    "exc",
+    [
+        httpx.ConnectError("dns failure"),
+        httpx.ReadTimeout("too slow"),
+        httpx.RemoteProtocolError("server disconnected"),
+    ],
+)
+async def test_transport_failure_fails_over(exc):
+    class Flaky(BaseProvider):
+        name = "flaky"
+        capabilities = frozenset({"search"})
+
+        async def search(self, query: str, **kw):
+            raise exc
+
+    router = make_router(Flaky(), FakeProvider("ok", {"search"}))
+    name, results = await router.run("search", query="q")
+    assert name == "ok"
+    assert results[0].title == "ok:q"
+
+
+async def test_real_adapter_malformed_response_fails_over():
+    # end-to-end: a provider answering 200 with a malformed body degrades to
+    # the next candidate instead of crashing the tool call
+    from conftest import make_client
+
+    from scrape_n_search.providers.tavily import TavilyProvider
+
+    malformed = TavilyProvider(
+        "k", make_client(lambda r: httpx.Response(200, json={"results": {"web": []}}))
+    )
+    router = Router([malformed, FakeProvider("ok", {"search"})], priority=["tavily", "ok"])
+    name, results = await router.run("search", query="q")
+    assert name == "ok"
+    assert results[0].title == "ok:q"
+
+
+async def test_real_adapter_non_json_response_fails_over():
+    from conftest import make_client
+
+
+    from scrape_n_search.providers.tavily import TavilyProvider
+
+
+    challenge = TavilyProvider(
+        "k", make_client(lambda r: httpx.Response(200, text="<html>verify you are human</html>"))
+    )
+    router = Router([challenge, FakeProvider("ok", {"search"})], priority=["tavily", "ok"])
+    name, _ = await router.run("search", query="q")
+    assert name == "ok"

@@ -52,12 +52,12 @@ class TinyFishProvider(BaseProvider):
             params["domain_type"] = domain_type
         data = await self._request_json("GET", SEARCH, params=params, headers=await self._headers())
         results = []
-        for r in data.get("results", [])[:max_results]:
+        for r in self._items(data.get("results"), "results")[:max_results]:
             results.append(
                 SearchResult(
-                    title=r.get("title", ""),
-                    url=r.get("url", ""),
-                    snippet=r.get("snippet", ""),
+                    title=self._text(r.get("title"), "title"),
+                    url=self._text(r.get("url"), "url"),
+                    snippet=self._text(r.get("snippet"), "snippet"),
                 )
             )
         return results
@@ -66,13 +66,13 @@ class TinyFishProvider(BaseProvider):
         data = await self._request_json(
             "POST", FETCH, json={"urls": [url], "format": format}, headers=await self._headers()
         )
-        results = data.get("results", [])
+        results = self._items(data.get("results"), "results")
         if results:
             r = results[0]
             return FetchedPage(
-                url=r.get("url", url),
-                content=r.get("text", ""),
+                url=self._text(r.get("url"), "url") or url,
+                content=self._text(r.get("text"), "text"),
                 title=r.get("title"),
-                format=r.get("format", format),
+                format=self._text(r.get("format"), "format") or format,
             )
         raise ProviderError(f"tinyfish fetch failed: {data.get('errors', [])}")

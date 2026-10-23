@@ -177,11 +177,21 @@ when `CACHE_TTL` is set).
 
 ```bash
 .venv/bin/python -m pytest mcp-server/tests -q
+
+# branch coverage must stay at 100%
+.venv/bin/python -m coverage run --branch --source=mcp-server/src/scrape_n_search \
+  -m pytest mcp-server/tests -q
+.venv/bin/python -m coverage report -m
 ```
 
-Unit tests cover per-provider response normalisation, router selection/failover/TTL
-cache, argument validation, configuration (timeouts, cache, logging), and the MCP
-surface end-to-end. To add a provider, subclass `BaseProvider`
+Tests cover per-provider response normalisation, router selection/failover/TTL
+cache, argument validation, configuration (timeouts, cache, logging), the
+emulated search/crawl/extract paths (Bing SERP parsing including truncated
+responses, crawl BFS invariants, HTML-to-text stripping), and the MCP surface
+end-to-end — both over an in-memory transport and over a real stdio subprocess.
+Shape-invalid provider responses (non-JSON 200s, wrong-typed fields) are
+asserted to raise `ProviderError` and fail over rather than crash the call.
+To add a provider, subclass `BaseProvider`
 (`mcp-server/src/scrape_n_search/providers/base.py`), register it in `build_providers`,
 and add a normalisation test.
 

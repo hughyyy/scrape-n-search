@@ -43,9 +43,9 @@ class Router:
         # tool -> {key: (expires_monotonic, provider_name, result)}
         self._cache: dict[str, dict[str, tuple[float, str, object]]] = {}
         if priority:
-            self._order = [n for n in priority if n in self._providers] + [
-                n for n in self._providers if n not in priority
-            ]
+            # Dedupe: a repeated name would otherwise be tried (and billed) twice.
+            named = list(dict.fromkeys(n for n in priority if n in self._providers))
+            self._order = named + [n for n in self._providers if n not in named]
         else:
             self._order = list(self._providers)
 

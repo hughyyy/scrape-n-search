@@ -277,3 +277,40 @@ def test_main_guard_executes_server_under_main(monkeypatch):
     monkeypatch.delitem(sys.modules, "scrape_n_search.__main__", raising=False)
     runpy.run_module("scrape_n_search.__main__", run_name="__main__")
     assert calls["run"] == "stdio"
+
+
+# --- non-finite numeric env values --------------------------------------
+# float("nan"/"inf") parses but breaks the semantics these knobs promise:
+# nan silently disables the TTL cache, inf makes entries never expire and
+# poisons httpx timeouts. Both must fail loudly at startup instead.
+
+
+async def test_configured_timeout_rejects_non_finite(monkeypatch):
+    for bad in ("nan", "inf", "-inf"):
+        monkeypatch.setenv("HTTP_TIMEOUT", bad)
+        with pytest.raises(ValueError):
+            configured_timeout()
+
+
+async def test_build_router_rejects_non_finite_cache_ttl(monkeypatch):
+    for bad in ("nan", "inf", "-inf"):
+        monkeypatch.setenv("CACHE_TTL", bad)
+        with pytest.raises(ValueError):
+            build_router_from_env()
+
+
+def test_log_level_accepts_lowercase(monkeypatch):
+    monkeypatch.setenv("LOG_LEVEL", "debug")
+    assert log_level_from_env() == logging.DEBUG
+
+
+async def test_provider_priority_duplicates_collapse(monkeypatch):
+    monkeypatch.setenv("PROVIDER_PRIORITY", "jina,jina,exa")
+    monkeypatch.delenv("HTTP_TIMEOUT", raising=False)
+    router = build_router_from_env()
+    try:
+        names = [p.name for p in router.available("fetch")]
+        assert names[:1] == ["jina"]  # first occurrence keeps its position
+        assert names.count("jina") == 1  # never offered twice
+    finally:
+        await router.aclose()

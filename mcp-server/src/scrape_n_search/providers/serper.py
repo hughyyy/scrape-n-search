@@ -38,12 +38,12 @@ class SerperProvider(BaseProvider):
             body["hl"] = language
         data = await self._request_json("POST", f"{BASE}/search", json=body, headers={"X-API-KEY": self.api_key})
         results = []
-        for r in data.get("organic", [])[:max_results]:
+        for r in self._items(data.get("organic"), "organic")[:max_results]:
             results.append(
                 SearchResult(
-                    title=r.get("title", ""),
-                    url=r.get("link", ""),
-                    snippet=r.get("snippet", ""),
+                    title=self._text(r.get("title"), "title"),
+                    url=self._text(r.get("link"), "link"),
+                    snippet=self._text(r.get("snippet"), "snippet"),
                     published_date=r.get("date"),
                 )
             )

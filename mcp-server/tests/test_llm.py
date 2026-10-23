@@ -306,3 +306,62 @@ async def test_get_client_lazy_creates_and_aclose_resets():
     client2 = llm._get_client()  # recreated after close
     await llm.aclose()
     assert client2.is_closed
+
+
+# --- malformed payload shapes -------------------------------------------
+# A 200 response that does not match the chat-completions schema must surface
+# as ProviderError; a raw KeyError/TypeError would escape the MCP error
+# contract and crash the emulated-extract tool call.
+
+
+def _json_handler(payload):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=payload)
+
+    return handler
+
+
+async def test_summarize_choices_as_object_raises_provider_error(monkeypatch):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "k")
+    _patch_client(monkeypatch, _json_handler({"choices": {"message": {"content": "x"}}}))
+    with pytest.raises(ProviderError, match="malformed response payload"):
+        await llm.summarize("text")
+
+
+async def test_summarize_message_not_object_raises_provider_error(monkeypatch):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "k")
+    _patch_client(monkeypatch, _json_handler({"choices": [{"message": "oops"}]}))
+    with pytest.raises(ProviderError, match="malformed response payload"):
+        await llm.summarize("text")
+
+
+async def test_summarize_content_not_string_raises_provider_error(monkeypatch):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "k")
+    _patch_client(
+        monkeypatch, _json_handler({"choices": [{"message": {"content": {"nested": 1}}}]})
+    )
+    with pytest.raises(ProviderError, match="malformed response payload"):
+        await llm.summarize("text")
+
+
+async def test_summarize_choices_non_list_raises_provider_error(monkeypatch):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "k")
+    _patch_client(monkeypatch, _json_handler({"choices": "nope"}))
+    with pytest.raises(ProviderError, match="malformed response payload"):
+        await llm.summarize("text")
+
+
+async def test_summarize_choice_without_message_raises_provider_error(monkeypatch):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "k")
+    _patch_client(monkeypatch, _json_handler({"choices": [{}]}))
+    with pytest.raises(ProviderError, match="malformed response payload"):
+        await llm.summarize("text")
+
+
+def test_backend_ignores_empty_string_keys(monkeypatch):
+    # a blank key in the harness env block is "not configured", not "configured
+    # with an unusable key"
+    monkeypatch.setenv("OPENROUTER_API_KEY", "")
+    monkeypatch.setenv("HF_TOKEN", "")
+    assert llm.backend() is None
+    assert llm.configured() is False

@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 
 import httpx
 import pytest
 
+from scrape_n_search.errors import ProviderError
+from scrape_n_search.providers.base import BaseProvider
 from scrape_n_search.providers.exa import ExaProvider
 from scrape_n_search.providers.firecrawl import FirecrawlProvider
 from scrape_n_search.providers.jina import JinaProvider, _parse_search_markdown
@@ -15,8 +18,6 @@ from scrape_n_search.providers.serper import SerperProvider
 from scrape_n_search.providers.tavily import TavilyProvider
 from scrape_n_search.providers.tinyfish import TinyFishProvider
 from scrape_n_search.providers.zenrows import ZenRowsProvider
-
-from scrape_n_search.providers.base import BaseProvider
 
 from conftest import make_client
 
@@ -1099,3 +1100,189 @@ async def test_exa_search_omits_type_when_falsy():
 
     provider = ExaProvider("k", make_client(handler))
     assert await provider.search("q", search_type="") == []
+
+
+# --- malformed 200 responses -------------------------------------------
+# A provider answering 200 with the wrong JSON shape must raise ProviderError
+# (so the router fails over), never AttributeError/TypeError/KeyError/
+# JSONDecodeError. These shapes are what real APIs emit during partial
+# outages, deprecations, and interstitial challenge pages.
+
+
+async def test_request_json_non_json_body_raises_provider_error():
+    provider = TavilyProvider(
+        "k", make_client(lambda r: httpx.Response(200, text="<html>challenge</html>"))
+    )
+    with pytest.raises(ProviderError, match="non-JSON response"):
+        await provider.search("q")
+
+
+async def test_request_json_non_object_root_raises_provider_error():
+    provider = TavilyProvider("k", make_client(lambda r: httpx.Response(200, json=[1, 2])))
+    with pytest.raises(ProviderError, match="non-object JSON"):
+        await provider.search("q")
+
+
+async def test_list_field_absent_or_null_means_no_items():
+    for payload in ({}, {"results": None}):
+        provider = TavilyProvider(
+            "k", make_client(lambda r, p=payload: httpx.Response(200, json=p))
+        )
+        assert await provider.search("q") == []
+
+
+@pytest.mark.parametrize("bad", [{}, "x", 3, ["not-an-object"]])
+async def test_list_field_malformed_shape_raises_provider_error(bad):
+    provider = TavilyProvider(
+        "k", make_client(lambda r: httpx.Response(200, json={"results": bad}))
+    )
+    with pytest.raises(ProviderError, match="malformed 'results'"):
+        await provider.search("q")
+
+
+async def test_text_field_non_string_raises_provider_error():
+    provider = TavilyProvider(
+        "k",
+        make_client(lambda r: httpx.Response(200, json={"results": [{"content": {"a": 1}}]})),
+    )
+    with pytest.raises(ProviderError, match="non-string 'content'"):
+        await provider.search("q")
+
+
+async def test_exa_search_rejects_malformed_results():
+    for payload in ({"results": {}}, {"results": [1]}):
+        provider = ExaProvider(
+            "k", make_client(lambda r, p=payload: httpx.Response(200, json=p))
+        )
+        with pytest.raises(ProviderError, match="malformed 'results'"):
+            await provider.search("q")
+
+
+async def test_firecrawl_fetch_rejects_null_data():
+    provider = FirecrawlProvider("k", make_client(lambda r: httpx.Response(200, json={"data": None})))
+    # null data is "empty object", not a crash: fetch yields empty content
+    page = await provider.fetch("https://t")
+    assert page.content == "" and page.url == "https://t"
+
+
+async def test_firecrawl_fetch_rejects_non_object_data():
+    provider = FirecrawlProvider("k", make_client(lambda r: httpx.Response(200, json={"data": [1]})))
+    with pytest.raises(ProviderError, match="malformed 'data'"):
+        await provider.fetch("https://t")
+
+
+async def test_firecrawl_search_rejects_non_list_web():
+    provider = FirecrawlProvider(
+        "k", make_client(lambda r: httpx.Response(200, json={"data": {"web": 5}}))
+    )
+    with pytest.raises(ProviderError, match="malformed 'data'"):
+        await provider.search("q")
+
+
+async def test_firecrawl_crawl_rejects_non_object_status():
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST":
+            return httpx.Response(200, json={"id": "job1"})
+        return httpx.Response(200, json=[1])
+
+
+    provider = FirecrawlProvider("k", make_client(handler))
+    with pytest.raises(ProviderError, match="non-object JSON"):
+        await provider.crawl("https://t", poll_interval=0.01, timeout=1)
+
+
+async def test_firecrawl_crawl_completed_null_data_returns_no_pages():
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST":
+            return httpx.Response(200, json={"id": "job1"})
+        return httpx.Response(200, json={"status": "completed", "data": None})
+
+
+    provider = FirecrawlProvider("k", make_client(handler))
+    assert await provider.crawl("https://t", poll_interval=0.01, timeout=1) == []
+
+
+async def test_firecrawl_crawl_zero_poll_interval_still_times_out():
+    # elapsed += poll_interval never advanced with a zero interval: the old
+    # loop spun forever. The wall-clock deadline bounds it.
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST":
+            return httpx.Response(200, json={"id": "job1"})
+        return httpx.Response(200, json={"status": "processing"})
+
+
+    provider = FirecrawlProvider("k", make_client(handler))
+    with pytest.raises(ProviderError, match="timed out"):
+        await asyncio.wait_for(
+            provider.crawl("https://t", poll_interval=0, timeout=0.02), timeout=5
+        )
+
+
+async def test_serper_rejects_malformed_organic():
+    provider = SerperProvider("k", make_client(lambda r: httpx.Response(200, json={"organic": {}})))
+    with pytest.raises(ProviderError, match="malformed 'organic'"):
+        await provider.search("q")
+
+
+async def test_tinyfish_fetch_rejects_non_object_results():
+    provider = TinyFishProvider(
+        "k", make_client(lambda r: httpx.Response(200, json={"results": ["x"]}))
+    )
+    with pytest.raises(ProviderError, match="malformed 'results'"):
+        await provider.fetch("https://t")
+
+
+async def test_scrappey_rejects_malformed_solution():
+    for solution in (None, [], "s"):
+        provider = ScrappeyProvider(
+            "k",
+            make_client(
+                lambda r, s=solution: httpx.Response(200, json={"data": "success", "solution": s})
+            ),
+        )
+        if solution is None:
+            # absent solution is treated as an empty object: empty page
+            page = await provider.fetch("https://t")
+            assert page.content == ""
+        else:
+            with pytest.raises(ProviderError, match="malformed 'solution'"):
+                await provider.fetch("https://t")
+
+
+async def test_scrappey_screenshot_rejects_non_string_image():
+    provider = ScrappeyProvider(
+        "k",
+        make_client(lambda r: httpx.Response(200, json={"data": "success", "solution": {"screenshot": {"a": 1}}})),
+    )
+    with pytest.raises(ProviderError, match="non-string 'screenshot'"):
+        await provider.screenshot("https://t")
+
+
+async def test_scrappey_session_null_solution_is_empty_object():
+    provider = ScrappeyProvider(
+        "k",
+        make_client(lambda r: httpx.Response(200, json={"data": "success", "solution": None})),
+    )
+    assert await provider.session("create", "s1") == {"op": "create", "session": "s1", "solution": {}}
+
+
+async def test_scrappey_actions_rejects_non_list_javascript_return():
+    provider = ScrappeyProvider(
+        "k",
+        make_client(
+            lambda r: httpx.Response(
+                200,
+                json={"data": "success", "solution": {"javascriptReturn": "nope"}},
+            )
+        ),
+    )
+    with pytest.raises(ProviderError, match="malformed 'javascriptReturn'"):
+        await provider.browser_actions("https://t", actions=[{"type": "wait", "wait": 1}])
+
+
+async def test_zenrows_extract_non_json_raises_provider_error():
+    provider = ZenRowsProvider(
+        "k", make_client(lambda r: httpx.Response(200, text="<html>blocked</html>"))
+    )
+    with pytest.raises(ProviderError, match="non-JSON response"):
+        await provider.extract("https://t")

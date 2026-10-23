@@ -5,6 +5,8 @@ __pycache__/
 .venv/
 .pytest_cache/
 build/
+.coverage
+coverage.xml
 dist/
 
 # Env / secrets

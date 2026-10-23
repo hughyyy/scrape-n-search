@@ -287,10 +287,25 @@ added there apply without touching the OMP config.
 
 ```bash
 .venv/bin/python -m pytest mcp-server/tests -q
+
+# branch coverage must stay at 100%
+.venv/bin/python -m coverage run --branch \
+  --source=mcp-server/src/scrape_n_search -m pytest mcp-server/tests -q
+.venv/bin/python -m coverage report -m
 ```
 
-Unit tests cover per-provider normalization (mocked HTTP), router selection/failover,
-and the MCP surface end-to-end over an in-memory transport.
+Unit tests cover per-provider normalization (mocked HTTP), router
+selection/failover/TTL-cache semantics, the emulated search/crawl/extract
+paths (truncated SERPs, crawl BFS invariants, HTML stripping), and the MCP
+surface end-to-end over an in-memory transport. `tests/test_stdio_integration.py`
+additionally spawns the real server over stdio to cover `main()` env wiring,
+schema publication, the playbook resource, and lifespan teardown.
+
+Adapters treat a 200 response whose body breaks the expected shape (non-JSON
+body, non-object root, non-list field, non-object item, non-string field) as a
+`ProviderError`, so the router fails over instead of the call crashing. When
+adding a provider, use `self._items` / `self._object` / `self._text` for every
+field you read.
 
 ## Development — adding a provider
 

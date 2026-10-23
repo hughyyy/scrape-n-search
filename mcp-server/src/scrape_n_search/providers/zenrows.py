@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import httpx
 
+from ..errors import ProviderError
 from ..models import FetchedPage
 from .base import BaseProvider
 
@@ -56,4 +57,7 @@ class ZenRowsProvider(BaseProvider):
         params = {"apikey": self.api_key, "url": url, "extract": "auto"}
         resp = await self._client.get(f"{BASE}/extract", params=params)
         resp.raise_for_status()
-        return resp.json()
+        try:
+            return resp.json()
+        except ValueError as exc:
+            raise ProviderError(f"provider '{self.name}' returned a non-JSON response") from exc

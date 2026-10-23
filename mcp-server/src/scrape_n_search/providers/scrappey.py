@@ -61,15 +61,19 @@ class ScrappeyProvider(BaseProvider):
         data = await self._request_json("POST", f"{BASE}?key={self.api_key}", json=body)
         if data.get("data") != "success":
             raise ProviderError(f"scrappey fetch failed: {data.get('data', data)}")
-        solution = data.get("solution", {})
+        solution = self._object(data, "solution")
         if browser and want_markdown:
-            content = solution.get("markdown") or solution.get("innerText") or ""
+            content = self._text(
+                solution.get("markdown") or solution.get("innerText"), "markdown"
+            )
             out_format = "markdown"
         else:
-            content = solution.get("response") or solution.get("innerText") or ""
+            content = self._text(
+                solution.get("response") or solution.get("innerText"), "response"
+            )
             out_format = "html"
         return FetchedPage(
-            url=solution.get("currentUrl") or url,
+            url=self._text(solution.get("currentUrl"), "currentUrl") or url,
             content=content,
             title=None,
             format=out_format,
@@ -111,16 +115,25 @@ class ScrappeyProvider(BaseProvider):
         data = await self._request_json("POST", f"{BASE}?key={self.api_key}", json=body)
         if data.get("data") != "success":
             raise ProviderError(f"scrappey browser_actions failed: {data.get('data', data)}")
-        solution = data.get("solution", {})
+        solution = self._object(data, "solution")
         if want_markdown:
-            content = solution.get("markdown") or solution.get("innerText") or ""
+            content = self._text(
+                solution.get("markdown") or solution.get("innerText"), "markdown"
+            )
         else:
-            content = solution.get("response") or solution.get("innerText") or ""
+            content = self._text(
+                solution.get("response") or solution.get("innerText"), "response"
+            )
+        javascript_return = solution.get("javascriptReturn") or []
+        if not isinstance(javascript_return, list):
+            raise ProviderError(
+                f"provider '{self.name}' returned a malformed 'javascriptReturn' field"
+            )
         return BrowserActionsResult(
-            url=solution.get("currentUrl") or url,
+            url=self._text(solution.get("currentUrl"), "currentUrl") or url,
             content=content,
             format="markdown" if want_markdown else "html",
-            javascript_return=solution.get("javascriptReturn") or [],
+            javascript_return=javascript_return,
         )
 
     async def screenshot(
@@ -149,10 +162,14 @@ class ScrappeyProvider(BaseProvider):
         data = await self._request_json("POST", f"{BASE}?key={self.api_key}", json=body)
         if data.get("data") != "success":
             raise ProviderError(f"scrappey screenshot failed: {data.get('data', data)}")
-        solution = data.get("solution", {})
+        solution = self._object(data, "solution")
         img = solution.get("screenshot")
         if not img:
             raise ProviderError("scrappey screenshot: no screenshot returned in response")
+        if not isinstance(img, str):
+            raise ProviderError(
+                f"provider '{self.name}' returned a non-string 'screenshot' field"
+            )
         return img
 
     async def session(self, op: str, session: str, **kw) -> dict:
@@ -176,4 +193,4 @@ class ScrappeyProvider(BaseProvider):
         )
         if data.get("data") != "success":
             raise ProviderError(f"scrappey session {op} failed: {data.get('data', data)}")
-        return {"op": op, "session": session, "solution": data.get("solution", {})}
+        return {"op": op, "session": session, "solution": self._object(data, "solution")}

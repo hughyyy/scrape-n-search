@@ -34,7 +34,7 @@ Repository = "https://github.com/hughyyy/scrape-n-search"
 Documentation = "https://github.com/hughyyy/scrape-n-search/blob/main/README.md"
 
 [project.optional-dependencies]
-dev = ["pytest", "pytest-asyncio"]
+dev = ["pytest", "pytest-asyncio", "coverage"]
 
 [project.scripts]
 scrape-n-search = "scrape_n_search.__main__:main"

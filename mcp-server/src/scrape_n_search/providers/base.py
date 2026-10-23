@@ -68,4 +68,44 @@ class BaseProvider:
     ) -> dict:
         resp = await self._client.request(method, url, params=params, json=json, headers=headers)
         resp.raise_for_status()
-        return resp.json()
+        try:
+            payload = resp.json()
+        except ValueError as exc:
+            # 200 with an HTML challenge/error page is a provider fault; it must
+            # fail over, not escape as a JSONDecodeError.
+            raise ProviderError(f"provider '{self.name}' returned a non-JSON response") from exc
+        if not isinstance(payload, dict):
+            raise ProviderError(
+                f"provider '{self.name}' returned a non-object JSON response"
+            )
+        return payload
+
+    def _items(self, value: object, label: str) -> list[dict]:
+        """Response list field: absent/None means no items.
+
+        A non-list, or a list holding non-objects, is a provider fault — raising
+        ProviderError lets the router fail over instead of crashing on
+        ``r.get(...)``.
+        """
+        if value is None:
+            return []
+        if not isinstance(value, list) or any(not isinstance(item, dict) for item in value):
+            raise ProviderError(f"provider '{self.name}' returned a malformed '{label}' field")
+        return value
+
+    def _object(self, data: dict, label: str) -> dict:
+        """Object field: absent/None means empty; any other shape is a fault."""
+        value = data.get(label)
+        if value is None:
+            return {}
+        if not isinstance(value, dict):
+            raise ProviderError(f"provider '{self.name}' returned a malformed '{label}' field")
+        return value
+
+    def _text(self, value: object, label: str) -> str:
+        """String field: absent/None means empty; any other shape is a fault."""
+        if value is None:
+            return ""
+        if not isinstance(value, str):
+            raise ProviderError(f"provider '{self.name}' returned a non-string '{label}' field")
+        return value

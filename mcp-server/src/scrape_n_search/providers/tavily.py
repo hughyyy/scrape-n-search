@@ -53,12 +53,12 @@ class TavilyProvider(BaseProvider):
             body["exclude_domains"] = exclude_domains
         data = await self._request_json("POST", f"{BASE}/search", json=body)
         results = []
-        for r in data.get("results", []):
+        for r in self._items(data.get("results"), "results"):
             results.append(
                 SearchResult(
-                    title=r.get("title", ""),
-                    url=r.get("url", ""),
-                    snippet=r.get("content", ""),
+                    title=self._text(r.get("title"), "title"),
+                    url=self._text(r.get("url"), "url"),
+                    snippet=self._text(r.get("content"), "content"),
                     published_date=r.get("published_date"),
                     score=r.get("score"),
                 )
@@ -68,13 +68,13 @@ class TavilyProvider(BaseProvider):
     async def fetch(self, url: str, *, format: str = "markdown", **kw) -> FetchedPage:
         body = {"api_key": self.api_key, "urls": [url], "extract_depth": "advanced"}
         data = await self._request_json("POST", f"{BASE}/extract", json=body)
-        results = data.get("results", [])
+        results = self._items(data.get("results"), "results")
         if not results:
             raise ProviderError(f"tavily extract failed: {data.get('failed_results', [])}")
         r = results[0]
         return FetchedPage(
-            url=r.get("url", url),
-            content=r.get("raw_content", ""),
+            url=self._text(r.get("url"), "url") or url,
+            content=self._text(r.get("raw_content"), "raw_content"),
             title=r.get("title"),
             format="markdown",
         )

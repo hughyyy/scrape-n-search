@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import os
 from pathlib import Path
 
@@ -44,8 +45,8 @@ def build_router_from_env() -> Router:
     priority_raw = os.environ.get("PROVIDER_PRIORITY")
     priority = [p.strip() for p in priority_raw.split(",") if p.strip()] if priority_raw else DEFAULT_PRIORITY
     cache_ttl = float(os.environ.get("CACHE_TTL") or 0)
-    if cache_ttl < 0:
-        raise ValueError("CACHE_TTL must be zero or a positive number of seconds")
+    if not math.isfinite(cache_ttl) or cache_ttl < 0:
+        raise ValueError("CACHE_TTL must be a finite, non-negative number of seconds")
     return Router(providers, priority=priority, client=client, cache_ttl=cache_ttl)
 
 

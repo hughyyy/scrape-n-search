@@ -146,10 +146,15 @@ async def summarize(page_text: str, *, instruction: str | None = None) -> str:
             continue
         except (httpx.HTTPError, ValueError) as exc:
             raise ProviderError(f"LLM summarize failed: {exc}") from exc
-        try:
-            content = (data.get("choices") or [{}])[0].get("message", {}).get("content")
-        except AttributeError as exc:  # pragma: no cover - malformed payload
-            raise ProviderError("LLM summarize failed: malformed response payload") from exc
-        if not content or not content.strip():
+        choices = data.get("choices") if isinstance(data, dict) else None
+        if isinstance(choices, list) and not choices:
+            raise ProviderError("LLM summarize failed: empty completion")
+        if not isinstance(choices, list) or not isinstance(choices[0], dict):
+            raise ProviderError("LLM summarize failed: malformed response payload")
+        message = choices[0].get("message")
+        content = message.get("content") if isinstance(message, dict) else None
+        if not isinstance(content, str):
+            raise ProviderError("LLM summarize failed: malformed response payload")
+        if not content.strip():
             raise ProviderError("LLM summarize failed: empty completion")
         return content.strip()

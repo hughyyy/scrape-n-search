@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import os
 
 import httpx
@@ -31,7 +32,7 @@ def configured_timeout() -> httpx.Timeout:
     if not raw:
         return DEFAULT_TIMEOUT
     total = float(raw)
-    if total <= 0:
+    if not math.isfinite(total) or total <= 0:
         raise ValueError(f"HTTP_TIMEOUT must be a positive number of seconds, got {raw!r}")
     return httpx.Timeout(total, connect=min(15.0, total))
 

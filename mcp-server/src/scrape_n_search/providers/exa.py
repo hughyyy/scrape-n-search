@@ -48,16 +48,16 @@ class ExaProvider(BaseProvider):
             body["excludeDomains"] = exclude_domains
         data = await self._request_json("POST", f"{BASE}/search", json=body, headers=await self._headers())
         results = []
-        for r in data.get("results", []):
-            snippet = r.get("text") or ""
+        for r in self._items(data.get("results"), "results"):
+            snippet = self._text(r.get("text"), "text")
             if not snippet and isinstance(r.get("highlights"), list):
                 # the Exa API returns highlights as a list; flatten to text so
                 # snippet keeps the unified string contract
                 snippet = " ".join(str(h) for h in r["highlights"])
             results.append(
                 SearchResult(
-                    title=r.get("title", ""),
-                    url=r.get("url", ""),
+                    title=self._text(r.get("title"), "title"),
+                    url=self._text(r.get("url"), "url"),
                     snippet=snippet[:500],
                     published_date=r.get("publishedDate"),
                     score=r.get("score"),
@@ -69,13 +69,13 @@ class ExaProvider(BaseProvider):
         data = await self._request_json(
             "POST", f"{BASE}/contents", json={"ids": [url], "text": True}, headers=await self._headers()
         )
-        results = data.get("results", [])
+        results = self._items(data.get("results"), "results")
         if not results:
             raise ProviderError("exa contents returned no result")
         r = results[0]
         return FetchedPage(
-            url=r.get("url", url),
-            content=r.get("text", ""),
+            url=self._text(r.get("url"), "url") or url,
+            content=self._text(r.get("text"), "text"),
             title=r.get("title"),
             format="markdown",
         )
