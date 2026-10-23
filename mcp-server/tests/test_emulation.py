@@ -6,6 +6,8 @@ import base64
 
 import pytest
 
+from urllib.parse import urlparse
+
 from scrape_n_search.emulation import (
     _BingSERPParser,
     _MAX_LINKS_PER_PAGE,
@@ -700,3 +702,117 @@ async def test_link_extraction_excludes_empty_and_protocol_hrefs():
     )
     links = _extract_links(html, "https://example.com/dir/")
     assert links == ["HTTP://example.com/up"]  # scheme case is preserved; _crawl_key lowercases for dedupe
+
+
+# --- branch gaps: parser end-tag short-circuits + property fuzzing -----------
+
+
+def test_bing_parser_tolerates_orphan_end_tags():
+    # </h2> and </p> arriving without a matching open tag must be skipped
+    # (the _in_h2/_in_p short-circuit arms), and valid results still parse
+    html = (
+        '<ol id="b_results"><li class="b_algo">'
+        "</h2></p>"  # orphan end tags before any h2/p
+        '<h2><a href="https://example.com/a">A</a></h2>'
+        "<p>snippet</p>"
+        "</li></ol>"
+    )
+    parser = _BingSERPParser()
+    parser.feed(html)
+    assert len(parser.results) == 1
+    assert parser.results[0].title == "A"
+    assert parser.results[0].snippet == "snippet"
+
+
+def test_bing_parser_fuzz_never_raises_or_emits_empty_results():
+    import random
+
+    rng = random.Random(20261023)
+    for _ in range(40):
+        parts = ['<ol id="b_results">']
+        n_results = rng.randint(0, 6)
+        for _ in range(n_results):
+            parts.append('<li class="b_algo">')
+            # random malformed noise inside the result
+            for _ in range(rng.randint(0, 3)):
+                parts.append(rng.choice(["<div>", "</div>", "<span class='x'>", "text", "<p>", "</li>", "<b>"]))
+            if rng.random() < 0.8:
+                href = f"https://example.com/{rng.randint(0, 99)}"
+                parts.append(f'<h2><a href="{href}">Title {rng.randint(0, 99)}</a></h2>')
+            if rng.random() < 0.8:
+                parts.append(f"<p>Snippet {rng.randint(0, 99)}</p>")
+            parts.append("</li>")
+        parts.append("</ol>")
+        html = "".join(parts)
+        parser = _BingSERPParser()
+        parser.feed(html)
+        assert isinstance(parser.results, list)
+        assert all(r.title and r.url for r in parser.results)
+        assert len(parser.results) <= n_results
+
+
+def test_html_to_text_fuzz_never_raises_or_leaks_markup():
+    import random
+
+    rng = random.Random(20261023)
+    # note: bracket entities (&lt;/&gt;) decode to real brackets by design
+    # (meaningful text), so the pool only carries raw brackets
+    soup = ["<div>", "</div>", "<p>", "</p>", "<script>", "</script>", "&amp;", "text ",
+            "<a href='x'>", "</a>", "<b>", "1 < 2", "a > b", "<style>.c{}</style>", "<h1>", "\n\n  "]
+    for _ in range(50):
+        html = "".join(rng.choice(soup) for _ in range(rng.randint(0, 200)))
+        text = _html_to_text(html)
+        assert isinstance(text, str)
+        assert "<" not in text and ">" not in text  # raw brackets never leak
+
+
+async def test_emulated_crawl_random_graph_invariants():
+    import random
+
+    rng = random.Random(20261023)
+    internal = [f"https://example.com/page{i}" for i in range(20)]
+    pages: dict[str, str] = {}
+    for url in internal:
+        links = []
+        for _ in range(rng.randint(0, 6)):
+            choice = rng.random()
+            if choice < 0.7:
+                links.append(rng.choice(internal))
+            elif choice < 0.85:
+                links.append("https://external.example.com/x")   # other host
+            else:
+                links.append("https://example.com/logo.png")      # asset
+        html = "<html><head><title>T</title></head><body>" + "".join(
+            f'<a href="{l}">{l}</a>' for l in links
+        ) + "</body></html>"
+        pages[url] = html
+    provider = StubProvider(pages)
+    start = internal[0]
+    results = await emulated_crawl(provider, start, max_pages=8, max_depth=3)
+    assert len(results) <= 8
+    fetched = [p.url for p in results]
+    # invariant: every fetched page is unique and same-host
+    assert len(set(fetched)) == len(fetched)
+    assert all(urlparse(p).netloc == "example.com" for p in fetched)
+    # external hosts and assets were never fetched (StubProvider would KeyError)
+    assert all(not _is_skippable(p) for p in fetched)
+    assert len(provider.calls) == len(fetched)
+
+
+def test_bing_parser_defensive_guards_under_corrupt_state():
+    # h2/p end tags can reference no in-flight result when internal state is
+    # inconsistent (malicious/malformed input); the guards must hold, not crash
+    parser = _BingSERPParser()
+    parser._li_depth = 1
+    parser._in_h2 = True
+    parser._cur = None
+    parser._buf = None
+    parser.feed("</h2>")  # h2 close with no result context
+    assert parser.results == []
+
+    parser._li_depth = 1
+    parser._in_p = True
+    parser._cur = None
+    parser._buf = None
+    parser.feed("</p>")  # p close with no result context
+    assert parser.results == []

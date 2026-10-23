@@ -126,22 +126,24 @@ async def summarize(page_text: str, *, instruction: str | None = None) -> str:
     headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
     body = _request_body(backend_name, page_text, instruction)
     client = _get_client()
-    for attempt in (1, 2):
+    retried = False
+    while True:
         try:
             resp = await client.post(ENDPOINTS[backend_name], json=body, headers=headers)
             resp.raise_for_status()
             data = resp.json()
         except httpx.HTTPStatusError as exc:
-            # 4xx that rejects the thinking-off param -> retry without it.
-            if attempt == 1 and exc.response.status_code in (400, 422):
-                logger.info(
-                    "LLM thinking-off param rejected (%s); retrying without it",
-                    exc.response.status_code,
-                )
-                body.pop("reasoning", None)
-                body.pop("enable_thinking", None)
-                continue
-            raise ProviderError(f"LLM summarize failed: {exc}") from exc
+            # 4xx that rejects the thinking-off param -> retry once without it.
+            if retried or exc.response.status_code not in (400, 422):
+                raise ProviderError(f"LLM summarize failed: {exc}") from exc
+            logger.info(
+                "LLM thinking-off param rejected (%s); retrying without it",
+                exc.response.status_code,
+            )
+            body.pop("reasoning", None)
+            body.pop("enable_thinking", None)
+            retried = True
+            continue
         except (httpx.HTTPError, ValueError) as exc:
             raise ProviderError(f"LLM summarize failed: {exc}") from exc
         try:

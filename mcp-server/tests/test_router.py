@@ -368,3 +368,17 @@ async def test_preferred_without_capability_and_no_alternatives():
     router = make_router(FakeProvider("a", {"search"}))
     with pytest.raises(NoProviderAvailable, match="does not support 'fetch'"):
         await router.run("fetch", preferred="a", url="https://x")
+
+
+async def test_concurrent_identical_fetches_safe():
+    provider = CountingProvider()
+    router = Router([provider], cache_ttl=60)
+    results = await asyncio.gather(*(router.run("fetch", url="https://x") for _ in range(5)))
+    names = {name for name, _ in results}
+    assert names == {"p"}
+    assert all(r.content for _, r in results)
+    # whichever raced, the cache ends consistent: a later call is a cache hit
+    await router.run("fetch", url="https://x")
+    calls_after = provider.calls
+    await router.run("fetch", url="https://x")
+    assert provider.calls == calls_after

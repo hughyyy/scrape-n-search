@@ -1089,3 +1089,13 @@ async def test_scrappey_screenshot_send_proxy_country_and_session():
     assert await provider.screenshot(
         "https://example.com", proxy_country="UnitedKingdom", session="s2"
     ) == "img"
+
+
+async def test_exa_search_omits_type_when_falsy():
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.read())
+        assert "type" not in body  # search_type="" -> omitted, like the default check
+        return httpx.Response(200, json={"results": []})
+
+    provider = ExaProvider("k", make_client(handler))
+    assert await provider.search("q", search_type="") == []

@@ -17,16 +17,19 @@ unified agent tools.
 
 ## Current state (all verified)
 
-- **286 tests pass, 100% line coverage** (`mcp-server/tests`, verified with
-  `python -m coverage run --source=…/src/scrape_n_search -m pytest tests`).
-  Round three (273 → 286) closed the measured gaps: base-provider
-  "not implemented" stubs, empty-string-key disabling, Scrappey
-  browser_actions/screenshot proxy_country+session bodies, native-tool
-  no-provider error paths, unknown-provider surfacing for crawl/extract,
-  `_hide_force_flags` required-list stripping + manager-absence tolerance,
-  `main()` boot wiring, the `__main__` guard (in-process runpy), and the
-  lazy LLM client creation. Also removed a dead unreachable raise in
-  `llm.summarize`.
+- **296 tests pass — 100% line AND 100% branch coverage** (`coverage run --branch`,
+  1051 statements / 344 branches). Round four closed the remaining decision
+  arms: parser end-tag short-circuits (orphan `</h2>`/`</p>`), `_cur is None`
+  defensive guards under corrupt parser state, Exa `search_type=""`, Scrappey
+  disabled with another default provider, `ENABLED_TOOLS` skipping blocks,
+  `_hide_force_flags` non-dict schemas — plus seeded property fuzzing
+  (Bing-parser random HTML, `_html_to_text` tag soup, random-graph crawl
+  invariants: uniqueness/same-host/max_pages) and a concurrent identical
+  fetch test. Improvements found: `llm.summarize` retry restructured to
+  `while True` (removes a provably dead loop-exit branch), `_html_to_text`
+  now strips stray raw angle brackets (`1 < 2` in text) while preserving
+  entity-encoded ones, and the dead final raise was removed. Live-verified:
+  force extract through the real Scrappey + OpenRouter keys.
 - Registered with Oh My Pi on this machine: `~/.omp/agent/mcp.json` →
   `scrape-n-search` (stdio, `python -m scrape_n_search`, cwd=`mcp-server`, 120s timeout).
 - A real `SCRAPPEY_API_KEY` is set in `mcp-server/.env` (gitignored). `DEFAULT_PROVIDER=scrappey`

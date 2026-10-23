@@ -298,10 +298,13 @@ async def emulated_crawl(
 
 def _html_to_text(html_text: str) -> str:
     """Strip page HTML to readable text: drop script/style/chrome blocks and
-    tags, unescape entities, collapse whitespace."""
+    tags, remove stray raw angle brackets (e.g. ``1 < 2`` in text content),
+    unescape entities, collapse whitespace. Entity-encoded brackets
+    (``&lt;``/``&gt;``) are decoded after the raw ones are removed."""
     without_blocks = _STRIP_BLOCKS_RE.sub(" ", html_text)
     without_tags = _TAG_RE.sub(" ", without_blocks)
-    return _clean_text(_html.unescape(without_tags))
+    without_brackets = re.sub(r"[<>]", " ", without_tags)
+    return _clean_text(_html.unescape(without_brackets))
 
 
 def _llm_max_chars() -> int:

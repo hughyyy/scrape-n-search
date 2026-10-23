@@ -801,3 +801,33 @@ def test_hide_force_flags_tolerates_missing_tool_manager():
 
     server = SimpleNamespace(_tool_manager=NoManager())  # no get_tool attr
     _hide_force_flags(server)  # must not raise; falls back to keeping the flag
+
+
+async def test_disabled_scrappey_with_other_default_provider():
+    # scrappey present but disabled: the emulated-tools union is skipped
+    disabled = FetchOnlyProvider(enabled=False)
+    disabled.name = "scrappey"
+    names = await _list_names(Router([FakeProvider(), disabled]), default_provider="fake")
+    assert names == {"web_search", "web_fetch"}  # only fake's capabilities
+
+
+async def test_enabled_tools_excluding_fetch_skips_its_block():
+    names = await _list_names(Router([FetchOnlyProvider()]), enabled_tools={"web_search"})
+    assert names == {"web_search"}
+
+
+def test_hide_force_flags_tolerates_non_dict_properties():
+    from types import SimpleNamespace
+
+    from scrape_n_search.server import _hide_force_flags
+
+    class FakeTool:
+        def __init__(self, parameters):
+            self.parameters = parameters
+
+    class FakeManager:
+        def get_tool(self, name):
+            return FakeTool({"properties": None, "required": None})
+
+    server = SimpleNamespace(_tool_manager=FakeManager())
+    _hide_force_flags(server)  # must not raise on malformed schema shapes
